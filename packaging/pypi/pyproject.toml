@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brandrune"
+version = "0.3.0"
+description = "A free Claude Code skill for naming what you build: plain-text names, registry-checked domains. This package points to the install."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Kyle Northup"}]
+keywords = ["naming", "domains", "namelix", "branding", "rdap", "claude-code"]
+
+[project.urls]
+Homepage = "https://brandrune.com"
+Repository = "https://github.com/brandrune/brandrune"
+
+[project.scripts]
+brandrune = "brandrune:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

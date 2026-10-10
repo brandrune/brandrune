@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""weavenames: registry-backed availability for a list of candidate names.
+"""brandrune: registry-backed availability for a list of candidate names.
 
 The model writes the names. This script is the only thing allowed to say
 whether a domain is open, and it only says so when a registry answered.
 
-    python3 weavenames.py check names.txt --out results.json --html names.html
-    python3 weavenames.py show results.json --max-len 8 --open com
-    python3 weavenames.py verify fretwise.com fretwise.ai
+    python3 brandrune.py check names.txt --out results.json --html names.html
+    python3 brandrune.py show results.json --max-len 8 --open com
+    python3 brandrune.py verify fretwise.com fretwise.ai
 
 Standard library only, Python 3.9 or newer. Nothing to install.
 
@@ -49,8 +49,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.2.2"
-USER_AGENT = f"weavenames/{VERSION} (+https://github.com/weavenames/weavenames)"
+VERSION = "0.3.0"
+USER_AGENT = f"brandrune/{VERSION} (+https://brandrune.com)"
 
 OPEN = "open"
 PREMIUM = "premium"
@@ -294,7 +294,7 @@ def whois_query(server: str, query: str) -> tuple[str | None, str]:
 
 def cache_dir() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "weavenames"
+    return Path(base) / "brandrune"
 
 
 _bootstrap: dict[str, str] | None = None
@@ -860,7 +860,7 @@ def describe_filters(args: argparse.Namespace, tlds: list[str]) -> str:
 HTML_TEMPLATE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>weavenames: __TITLE__</title>
+<title>Brandrune: __TITLE__</title>
 <style>
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
@@ -876,14 +876,14 @@ h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
 main { padding: 16px 32px 48px; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .card { background: #fff; border: 1px solid #e6e5e0; border-radius: 10px; padding: 14px 16px; }
 .name { font-size: 22px; font-weight: 600; letter-spacing: 0.01em; word-break: break-all; cursor: copy; }
-.meta { font-size: 12px; color: #8a8a84; margin: 2px 0 10px; }
+.meta { font-size: 12px; color: #5f5f5a; margin: 2px 0 10px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid #e0dfd9; color: #6b6b66; background: #f4f4f1; }
 .chip.open { background: #e8f5ec; border-color: #b9dfc5; color: #1f6b3a; font-weight: 600; }
 .chip.premium, .chip.expiring { background: #fdf3e1; border-color: #f0d49c; color: #8a5a00; }
-.chip.taken, .chip.parked, .chip.reserved { text-decoration: line-through; color: #9a9a94; }
-.chip.unknown { background: #fff; border-style: dashed; color: #8a8a84; }
-footer { padding: 0 32px 40px; font-size: 12px; color: #8a8a84; max-width: 860px; }
+.chip.taken, .chip.parked, .chip.reserved { text-decoration: line-through; color: #6b6b66; }
+.chip.unknown { background: #fff; border-style: dashed; color: #5f5f5a; }
+footer { padding: 0 32px 40px; font-size: 12px; color: #5f5f5a; max-width: 860px; }
 .empty { grid-column: 1 / -1; color: #6b6b66; padding: 40px 0; text-align: center; }
 </style></head>
 <body>
@@ -1038,7 +1038,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(CERT_HELP.format(e), file=sys.stderr)
         return 3
     doc = {
-        "tool": f"weavenames {VERSION}",
+        "tool": f"brandrune {VERSION}",
         "description": description,
         "checked_at": now_iso(),
         "seconds": round(time.monotonic() - started, 1),
@@ -1101,7 +1101,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="weavenames", description="Registry-backed name availability.")
+    p = argparse.ArgumentParser(prog="brandrune", description="Registry-backed name availability.")
     p.add_argument("--version", action="version", version=VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 

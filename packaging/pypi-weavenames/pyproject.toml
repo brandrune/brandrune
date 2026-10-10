@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weavenames"
+version = "0.0.2"
+description = "Renamed to Brandrune (https://brandrune.com). This release only points to the new install."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Kyle Northup"}]
+keywords = ["naming", "domains", "namelix", "branding", "rdap", "claude-code"]
+
+[project.urls]
+Homepage = "https://brandrune.com"
+Repository = "https://github.com/brandrune/brandrune"
+
+[project.scripts]
+weavenames = "weavenames:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

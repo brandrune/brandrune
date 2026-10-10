@@ -1,10 +1,11 @@
-# weavenames
+# Brandrune
 
-**Naming for people who build with AI.**
+**Names you can read. Domains that are really open.**
 
-A free Claude Code skill. Describe what you are building in a sentence. You get
-back names as plain text, each one checked live against the domain registries,
-with filters you actually control and a clean page to browse them.
+A free Claude Code skill for naming what you build. Describe it in a sentence.
+Claude writes about 150 names, and a small script asks the domain registries
+about every one. You get plain-text names, filters you actually control, and a
+clean page to browse them. Site: https://brandrune.com
 
 It exists because the usual name generators have three problems: the names come
 back styled as logos, so they are hard to read; you cannot filter them; and the
@@ -12,24 +13,50 @@ page is noisy. There is a fourth problem in most of them: "available" is a
 guess. Here it is not. A domain is only called open when the registry for that
 extension says it has no record of it, in the same run.
 
+Free, forever. No account, no API key, no paid tier.
+
 ## Install
 
 In Claude Code:
 
 ```
-/plugin marketplace add weavenames/weavenames
-/plugin install weavenames@weavenames
+/plugin marketplace add brandrune/brandrune
+/plugin install brandrune@brandrune
+```
+
+On Claude Code 2.1.275 or later this also works in one step:
+
+```
+/plugin install brandrune --marketplace brandrune/brandrune
 ```
 
 Or copy the skill folder by hand:
 
 ```bash
-git clone https://github.com/weavenames/weavenames
-cp -r weavenames/skills/weavenames ~/.claude/skills/
+git clone https://github.com/brandrune/brandrune
+cp -r brandrune/skills/brandrune ~/.claude/skills/
 ```
 
 It needs Python 3.9 or newer, which macOS and most Linux systems already have.
 There is nothing to pip install and no API key to set.
+
+### Coming from weavenames
+
+Brandrune was called weavenames until version 0.3.0. An existing
+`weavenames@weavenames` install keeps working: the marketplace still lists
+`weavenames` as an alias, so the next marketplace update brings you Brandrune
+under the old name. The skill also still answers when you ask for "weavenames".
+
+To move to the new name for good, once:
+
+```
+/plugin uninstall weavenames@weavenames
+/plugin marketplace remove weavenames
+/plugin marketplace add brandrune/brandrune
+/plugin install brandrune@brandrune
+```
+
+Keep only one of the two installed, or the skill loads twice.
 
 ## Use
 
@@ -73,6 +100,12 @@ the script (for example .us, .de, .eu, .ch, .es, .it, .nz), two-part ones such
 as .co.uk, and .fi always come back unknown.
 Every answer is saved with the server that gave it and the time.
 
+## What leaves your machine
+
+The candidate names go to the domain registries that answer for them, and to
+Vercel's domain API only if you set a token. Your description stays in your own
+Claude Code session. Brandrune has no server and collects nothing.
+
 ## Optional setup
 
 - **`VERCEL_TOKEN`** turns `open*` into a priced `open` and catches premium and
@@ -85,7 +118,7 @@ Every answer is saved with the server that gave it and the time.
 The checker works without Claude too:
 
 ```bash
-S=skills/weavenames/scripts/weavenames.py
+S=skills/brandrune/scripts/brandrune.py
 python3 $S verify lumenfret.com lumenfret.ai
 python3 $S check names.txt --tlds com,ai --out results.json --html names.html
 python3 $S show results.json --available-only --max-len 9 --include strum
@@ -107,8 +140,8 @@ python3 -m unittest discover -s tests
 ```
 
 The tests are offline and fake every registry answer. Earlier versions (a
-Python package with its own model calls and ranking) live in the git history,
-up to commit `cffa5dd`.
+Python package with its own model calls and ranking, published as weavenames)
+live in the git history, up to commit `cffa5dd`.
 
 ## License
 

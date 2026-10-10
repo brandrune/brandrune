@@ -1,0 +1,21 @@
+{
+  "name": "brandrune",
+  "version": "0.3.0",
+  "description": "Brandrune is a free Claude Code skill for naming what you build: plain-text names, registry-checked domains, real filters. Install it in Claude Code, see the README.",
+  "homepage": "https://brandrune.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brandrune/brandrune.git"
+  },
+  "bugs": "https://github.com/brandrune/brandrune/issues",
+  "license": "MIT",
+  "author": "Kyle Northup (https://brandrune.com)",
+  "keywords": ["naming", "domains", "namelix", "branding", "rdap", "claude-code", "claude-code-plugin"],
+  "bin": {
+    "brandrune": "bin/brandrune.js"
+  },
+  "files": ["bin/brandrune.js", "README.md"],
+  "engines": {
+    "node": ">=14"
+  }
+}
