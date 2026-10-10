@@ -542,5 +542,28 @@ class FailureIsolationTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class VercelCertTests(unittest.TestCase):
+    def tearDown(self):
+        wn._trust.clear()
+
+    def test_vercel_cert_failure_runs_unpriced_when_the_store_is_fine(self):
+        wn._trust[:] = [True]
+
+        def boom(url, headers=None):
+            raise wn.CertError("api.vercel.com", "unable to get local issuer")
+
+        with mock.patch.dict("os.environ", {"VERCEL_TOKEN": "t"}), mock.patch.object(wn, "http_get", boom):
+            self.assertIsNone(wn.vercel_checked(["com"], False))
+
+    def test_vercel_cert_failure_in_refine_keeps_the_registry_answer(self):
+        wn._trust[:] = [True]
+        v = wn.Vercel("t")
+        with mock.patch.object(wn, "check_domain", lambda n, t: wn.result(f"{n}.{t}", wn.OPEN)), \
+             mock.patch.object(v, "refine", mock.Mock(side_effect=wn.CertError("api.vercel.com", "x"))):
+            r = wn.check_one("foo", "com", v)
+        self.assertEqual(r["status"], wn.OPEN)
+        self.assertEqual(wn.cell(r), "open*")
+
+
 if __name__ == "__main__":
     unittest.main()

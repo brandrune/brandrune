@@ -515,13 +515,23 @@ def check_one(name: str, tld: str, vercel: "Vercel | None") -> dict:
 
     try:
         res = check_domain(name, tld)
-        if vercel and res["status"] == OPEN:
-            res = vercel.refine(res, tld)
-        return res
     except CertError as e:
         if not trust_store_ok():
             raise
-        return result(f"{name}.{tld}", UNKNOWN, note=f"certificate for {e.host} failed verification")
+        return result(f"{name}.{tld}", UNKNOWN, note=f"could not verify {e.host}'s certificate on this computer")
+    except Exception as exc:  # one bad answer must not sink the run
+        return result(f"{name}.{tld}", UNKNOWN, note=f"check failed: {type(exc).__name__}: {exc}")
+    if not (vercel and res["status"] == OPEN):
+        return res
+    try:
+        return vercel.refine(res, tld)
+    except CertError as e:
+        # The registry's answer stands; only the price is unverified.
+        if not trust_store_ok():
+            raise
+        res["registrar"] = {"source": "vercel", "verified": False, "at": now_iso()}
+        res["note"] = f"could not verify {e.host}'s certificate on this computer; price not verified"
+        return res
     except Exception as exc:  # one bad answer must not sink the run
         return result(f"{name}.{tld}", UNKNOWN, note=f"check failed: {type(exc).__name__}: {exc}")
 
@@ -620,7 +630,13 @@ def vercel_checked(tlds: list[str], no_price: bool) -> Vercel | None:
     v = vercel_from_env()
     if not v:
         return None
-    rejected = v.token_rejected()
+    try:
+        rejected = v.token_rejected()
+    except CertError:
+        if not trust_store_ok():
+            raise
+        print("Vercel's certificate could not be verified; running without price checks", file=sys.stderr)
+        return None
     if rejected:
         print(f"VERCEL_TOKEN was refused (HTTP {rejected}); running without price checks, "
               "so open names show as open*", file=sys.stderr)
