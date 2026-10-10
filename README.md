@@ -2,20 +2,21 @@
 
 **Names you can read. Domains that are really open.**
 
-A free Claude Code skill for naming what you build. Describe it in a sentence.
-Claude writes about 150 names, and a small script asks the domain registries
-about every one. You get plain-text names, filters you actually control, and a
+A free naming skill for Claude Code and Codex. Describe what you build in a
+sentence. Your coding agent writes about 150 names, and a small script asks the
+domain registries about every one. You get plain-text names, filters you actually control, and a
 clean page to browse them. Site: https://brandrune.com
 
-It exists because the usual name generators have three problems: the names come
-back styled as logos, so they are hard to read; you cannot filter them; and the
-page is noisy. There is a fourth problem in most of them: "available" is a
-guess. Here it is not. A domain is only called open when the registry for that
+It exists because the usual name generators have two problems: the names come
+back styled as logos, so they are hard to read, and the page is noisy. There is
+a third problem in most of them: "available" is a guess. Here it is not. A domain is only called open when the registry for that
 extension says it has no record of it, in the same run.
 
 Free, forever. No account, no API key, no paid tier.
 
 ## Install
+
+### Claude Code
 
 In Claude Code:
 
@@ -40,6 +41,31 @@ cp -r brandrune/skills/brandrune ~/.claude/skills/
 It needs Python 3.9 or newer, which macOS and most Linux systems already have.
 There is nothing to pip install and no API key to set.
 
+### Codex
+
+Ask Codex to install the skill:
+
+```text
+$skill-installer install https://github.com/brandrune/brandrune/tree/main/skills/brandrune
+```
+
+Or copy the same skill folder by hand into Codex's user skill directory:
+
+```bash
+git clone https://github.com/brandrune/brandrune
+mkdir -p ~/.agents/skills
+cp -r brandrune/skills/brandrune ~/.agents/skills/
+```
+
+For one repository only, copy it into that repository's `.agents/skills/`
+instead. Choose one location to avoid duplicate skills. Codex detects new
+skills automatically; restart it if Brandrune does not appear.
+
+The same Python requirement applies. `pip install brandrune` and
+`npx brandrune` print installation instructions; they do not install the skill.
+
+See the [official Codex skills guide](https://learn.chatgpt.com/docs/build-skills).
+
 ### Coming from weavenames
 
 Brandrune was called weavenames until version 0.3.0. An existing
@@ -60,6 +86,13 @@ Keep only one of the two installed, or the skill loads twice.
 
 ## Use
 
+In Codex, invoke it explicitly:
+
+```text
+$brandrune Name my app. It's a practice tracker for adults learning guitar.
+```
+
+Or let Claude Code or Codex select the skill from a matching request.
 Ask in plain words:
 
 > Name my app. It's a practice tracker for adults learning guitar, with a
@@ -70,8 +103,8 @@ Ask in plain words:
 
 > Is lumenfret.com taken?
 
-Claude writes about 150 candidates in a mix of styles, the bundled script checks
-every one, and you get a short recommendation plus a filterable page with the
+Your coding agent writes about 150 candidates in a mix of styles, the bundled
+script checks every one, and you get a short recommendation plus a filterable page with the
 full list. Then filter by talking:
 
 > Only 8 letters or less. Has to have "strum" in it. Just compounds.
@@ -104,7 +137,7 @@ Every answer is saved with the server that gave it and the time.
 
 The candidate names go to the domain registries that answer for them, and to
 Vercel's domain API only if you set a token. Your description stays in your own
-Claude Code session. Brandrune has no server and collects nothing.
+Claude Code or Codex session. Brandrune has no server and collects nothing.
 
 ## Optional setup
 
@@ -115,7 +148,7 @@ Claude Code session. Brandrune has no server and collects nothing.
 
 ## The script on its own
 
-The checker works without Claude too:
+The checker works without a coding agent too:
 
 ```bash
 S=skills/brandrune/scripts/brandrune.py
