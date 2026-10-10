@@ -67,7 +67,10 @@ other extensions from their registry's RDAP server (found through IANA's
 bootstrap list), and .io, .co, .sh, .me, .so and .gg from their registry's
 WHOIS, since those have no RDAP server. Redirects are never followed, a "not
 found" only counts when it is a real RDAP reply, and each registry must first
-report google.<extension> as registered before any name on it is called open.
+report nic.<extension> or google.<extension> as registered before any name on
+it is called open. Extensions with neither an RDAP server nor a WHOIS entry in
+the script (for example .us, .de, .eu, .ch, .es, .it, .nz), two-part ones such
+as .co.uk, and .fi always come back unknown.
 Every answer is saved with the server that gave it and the time.
 
 ## Optional setup

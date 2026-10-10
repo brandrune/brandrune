@@ -19,7 +19,8 @@ Below, `WN` means `python3 <skill dir>/scripts/weavenames.py`.
    this session.** Not from memory, not because it sounds obscure, not from a web
    search. If you have not checked it, say "not checked".
 2. **`unknown` is not available.** It means the script got no usable registry
-   answer: no reply after retries, a redirect, a reply it could not read, or an
+   answer: no reply after retries, a redirect, a reply it could not read, a
+   registry that failed the sanity check or has a bad certificate, or an
    extension it does not support. Say so, and re-check with `WN verify <domain>`
    if the name matters.
 3. **`open*` means unregistered, price not verified.** The script cannot rule
@@ -191,7 +192,11 @@ file. .io, .co, .sh, .me, .so and .gg have no RDAP server, so their registry's
 WHOIS is used instead, and an unrecognized WHOIS reply is reported as `unknown`.
 Redirects are never followed, a "not found" only counts when it comes back as a
 real RDAP reply, and before any name on an extension is called open, the script
-confirms that registry reports google.<extension> as registered.
+confirms that registry reports nic.<extension> or google.<extension> as
+registered. Extensions with no RDAP server and no WHOIS entry in the script
+(for example .us, .de, .eu, .ch, .es, .it, .nz), two-part ones like .co.uk,
+and .fi (its "not found" is an HTML page) always come back `unknown`. Run
+`WN verify <name>.<ext>` first if you are unsure an extension works.
 Every answer is stored in `results.json` with the URL or server that gave it and
 the time.
 

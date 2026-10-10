@@ -234,7 +234,7 @@ def ns(**kw):
 def entry(name, style, **statuses):
     return {"name": name, "style": style, "length": len(name),
             "domains": {t: {"domain": f"{name}.{t}", "status": s} for t, s in statuses.items()},
-            "extras": {}}
+}
 
 
 class FilterTests(unittest.TestCase):
@@ -272,7 +272,7 @@ class FilterTests(unittest.TestCase):
 class RenderTests(unittest.TestCase):
     def doc(self, registrar=None):
         return {"tool": "t", "description": "a </script><b>test</b>", "checked_at": "2026-10-10T12:00:00+00:00",
-                "tlds": ["com"], "extras": [], "registrar": registrar,
+                "tlds": ["com"], "registrar": registrar,
                 "names": [entry("hearth", None, com="open"), entry("zenolia", None, com="unknown")]}
 
     def test_unpriced_open_is_marked_and_explained(self):
@@ -337,20 +337,123 @@ class CanaryTests(unittest.TestCase):
     def tearDown(self):
         wn._canary.clear()
 
-    def test_open_is_downgraded_when_the_canary_is_not_registered(self):
-        fake = FakeHTTP({COM + "domain/foo.com": [(404, b"", "")], COM + "domain/google.com": [(404, b"", "")]})
+    def run_with(self, answers, name="foo"):
+        fake = FakeHTTP({COM + f"domain/{k}.com": v for k, v in answers.items()})
         with mock.patch.object(wn, "http_get", fake), mock.patch.object(wn, "rdap_base", lambda t: COM):
-            r = wn.check_domain("foo", "com")
+            return wn.check_domain(name, "com"), fake
+
+    def test_open_is_downgraded_when_no_canary_is_registered(self):
+        r, _ = self.run_with({"foo": [(404, b"", "")], "nic": [(404, b"", "")], "google": [(404, b"", "")]})
         self.assertEqual(r["status"], wn.UNKNOWN)
         self.assertIn("sanity check", r["note"])
 
-    def test_open_stands_when_the_canary_is_registered_and_is_asked_once(self):
+    def test_either_canary_is_enough(self):
+        r, _ = self.run_with({"foo": [(404, b"", "")], "nic": [(404, b"", "")],
+                              "google": [(200, rdap_record("google.com"), "")]})
+        self.assertEqual(r["status"], wn.OPEN)
+        r2, _ = self.run_with({"foo": [(404, b"", "")], "nic": [(200, rdap_record("nic.com"), "")]})
+        self.assertEqual(r2["status"], wn.OPEN)
+
+    def test_canary_is_asked_once_per_tld(self):
         fake = FakeHTTP({COM + "domain/foo.com": [(404, b"", "")], COM + "domain/bar.com": [(404, b"", "")],
-                         COM + "domain/google.com": [(200, rdap_record("google.com"), "")]})
+                         COM + "domain/nic.com": [(200, rdap_record("nic.com"), "")]})
         with mock.patch.object(wn, "http_get", fake), mock.patch.object(wn, "rdap_base", lambda t: COM):
             self.assertEqual(wn.check_domain("foo", "com")["status"], wn.OPEN)
             self.assertEqual(wn.check_domain("bar", "com")["status"], wn.OPEN)
-        self.assertEqual(fake.calls.count(COM + "domain/google.com"), 1)
+        self.assertEqual(fake.calls.count(COM + "domain/nic.com"), 1)
+
+    def test_a_canary_non_answer_is_not_cached(self):
+        r, _ = self.run_with({"foo": [(404, b"", "")], "nic": [(None, b"", "HTTP 429")],
+                              "google": [(None, b"", "HTTP 429")]})
+        self.assertEqual(r["status"], wn.UNKNOWN)
+        self.assertIn("could not run", r["note"])
+        self.assertNotIn("com", wn._canary)
+
+
+class PlainJson404Tests(unittest.TestCase):
+    def test_rdap_error_object_as_application_json_is_open(self):
+        fake = FakeHTTP({COM + "domain/foo.com": [(404, b'{"errorCode": 404, "title": "Not Found"}', "", "application/json")]})
+        with mock.patch.object(wn, "http_get", fake):
+            self.assertEqual(wn.check_rdap("foo", "com", COM)["status"], wn.OPEN)
+
+    def test_json_404_without_error_object_is_unknown(self):
+        fake = FakeHTTP({COM + "domain/foo.com": [(404, b'{"message": "nope"}', "", "application/json")]})
+        with mock.patch.object(wn, "http_get", fake):
+            self.assertEqual(wn.check_rdap("foo", "com", COM)["status"], wn.UNKNOWN)
+
+
+class CertTests(unittest.TestCase):
+    def tearDown(self):
+        wn._trust.clear()
+
+    def boom(self, name, tld):
+        if name == "foo":
+            raise wn.CertError("rdap.bad.test", "self signed")
+        return wn.result(f"{name}.{tld}", wn.TAKEN)
+
+    def test_one_bad_registry_certificate_is_an_unknown_row(self):
+        wn._trust[:] = [True]
+        entries = [{"name": "foo", "style": None, "length": 3}, {"name": "bar", "style": None, "length": 3}]
+        with mock.patch.object(wn, "check_domain", self.boom):
+            wn.run_checks(entries, ["com"], 2, None, progress=False)
+        self.assertEqual(entries[0]["domains"]["com"]["status"], wn.UNKNOWN)
+        self.assertIn("rdap.bad.test", entries[0]["domains"]["com"]["note"])
+        self.assertEqual(entries[1]["domains"]["com"]["status"], wn.TAKEN)
+
+    def test_a_broken_trust_store_stops_the_run(self):
+        wn._trust[:] = [False]
+        entries = [{"name": "foo", "style": None, "length": 3}]
+        with mock.patch.object(wn, "check_domain", self.boom):
+            with self.assertRaises(wn.CertError):
+                wn.run_checks(entries, ["com"], 1, None, progress=False)
+
+
+class RealRedirectTests(unittest.TestCase):
+    """Through the real opener and a real local server, not a mock."""
+
+    def test_redirect_target_is_never_contacted(self):
+        import http.server
+        import threading as th
+        hits = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                if self.path.startswith("/domain/"):
+                    self.send_response(302)
+                    self.send_header("Location", "/elsewhere")
+                    self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/rdap+json")
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        t = th.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            base = f"http://127.0.0.1:{srv.server_port}/"
+            r = wn.check_rdap("foo", "com", base)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        self.assertEqual(r["status"], wn.UNKNOWN)
+        self.assertEqual(hits, ["/domain/foo.com"])
+
+
+class HtmlLabelTests(unittest.TestCase):
+    def test_page_carries_the_python_label(self):
+        names = [entry("hearth", None, com="open")]
+        names[0]["domains"]["com"]["registrar"] = {"price": 2400.0, "verified": False}
+        doc = {"description": "x", "checked_at": wn.now_iso(), "tlds": ["com"], "registrar": "vercel", "names": names}
+        page = wn.render_html(doc)
+        data = json.loads(page.split('type="application/json">', 1)[1].split("</script>", 1)[0])
+        self.assertEqual(data["names"][0]["domains"]["com"]["label"], "open* $2,400")
+        self.assertNotIn("label", names[0]["domains"]["com"])
 
 
 class LabelTests(unittest.TestCase):
@@ -406,6 +509,9 @@ class PriceLabelTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"VERCEL_TOKEN": "bad"}), \
              mock.patch.object(wn, "http_get", FakeHTTP({wn.VERCEL_API + "/v1/registrar/tlds/com/price": [(401, b"{}", "")]})):
             self.assertIsNone(wn.vercel_checked(["com"], False))
+        with mock.patch.dict("os.environ", {"VERCEL_TOKEN": "ok"}), \
+             mock.patch.object(wn, "http_get", FakeHTTP({wn.VERCEL_API + "/v1/registrar/tlds/com/price": [(500, b"{}", "")]})):
+            self.assertIsNotNone(wn.vercel_checked(["com"], False))
 
 
 class FailureIsolationTests(unittest.TestCase):

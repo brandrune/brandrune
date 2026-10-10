@@ -49,7 +49,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 USER_AGENT = f"weavenames/{VERSION} (+https://github.com/weavenames/weavenames)"
 
 OPEN = "open"
@@ -114,7 +114,10 @@ PENDING = ("pending delete", "pendingdelete", "redemption period", "redemptionpe
 
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 STYLE_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
-CANARY = "google"  # registered on every TLD this script supports; checked once per TLD per run
+# Names known to be registered, tried in order. nic.<tld> is reserved for the
+# registry on gTLDs; google.<tld> covers ccTLDs such as .ca. Measured
+# 2026-10-10: one or the other was registered on 53 of 53 supported TLDs.
+CANARIES = ("nic", "google")
 
 
 def valid_label(name: str) -> bool:
@@ -196,6 +199,10 @@ def backoff(attempt: int, retry_after: str | None = None) -> None:
 class CertError(Exception):
     """TLS certificate verification failed. Retrying cannot fix this."""
 
+    def __init__(self, host: str, reason: str) -> None:
+        super().__init__(f"{host}: {reason}")
+        self.host = host
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     # A registry answers in place. A redirect is not an answer, and following
@@ -240,7 +247,7 @@ def http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int | Non
         except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
             reason = getattr(e, "reason", e)
             if isinstance(reason, ssl.SSLCertVerificationError) or isinstance(e, ssl.SSLCertVerificationError):
-                raise CertError(str(reason)) from None
+                raise CertError(host, str(reason)) from None
             last_err = f"{type(e).__name__}: {reason}"
         if attempt < RETRIES - 1:
             backoff(attempt, retry_after)
@@ -364,7 +371,13 @@ def check_rdap(name: str, tld: str, base: str) -> dict:
         # proxy, a captive portal or a moved server is an HTML page or a JSON
         # error saying there is no RDAP service (rdap.org does this for every
         # .io name). Neither is an answer.
-        if "application/rdap+json" not in ctype.lower():
+        # .fr and .uk send a standard RDAP error object as application/json;
+        # accept that, but never an HTML page (.fi sends one, so .fi stays
+        # unknown: it cannot be told apart from a proxy's error page).
+        error_object = json_object(body) or {}
+        plain_json_404 = ("application/json" in ctype.lower()
+                          and error_object.get("errorCode") == 404)
+        if "application/rdap+json" not in ctype.lower() and not plain_json_404:
             return result(domain, UNKNOWN, registry=evidence,
                           note=f"404 was not an RDAP reply (Content-Type {ctype or 'missing'})")
         doc = json_object(body) or {}
@@ -431,28 +444,86 @@ _canary_locks: dict[str, threading.Lock] = {}
 _canary_guard = threading.Lock()
 
 
-def canary(tld: str) -> dict:
-    """Look up a name known to be registered, once per TLD per run. If the
-    registry does not return it as registered, nothing it says about other
-    names on that TLD is trusted."""
+def canary(tld: str) -> tuple[bool | None, str]:
+    """Is this registry sane? Looks up names known to be registered, once per
+    TLD per run. True: one came back registered. False: every canary came back
+    as a definite non-registration. None: no definite answer (only definite
+    answers are cached, so the next row tries again)."""
 
     with _canary_guard:
         lock = _canary_locks.setdefault(tld, threading.Lock())
     with lock:
-        if tld not in _canary:
-            _canary[tld] = lookup(CANARY, tld)
-        return _canary[tld]
+        if tld in _canary:
+            return _canary[tld]
+        seen = []
+        definite = True
+        for name in CANARIES:
+            res = lookup(name, tld)
+            if res["status"] in (TAKEN, PARKED, EXPIRING):
+                _canary[tld] = (True, f"{name}.{tld} is registered")
+                return _canary[tld]
+            if res["status"] == UNKNOWN:
+                definite = False
+            seen.append(f"{name}.{tld} came back {res['status']}")
+        verdict = (False if definite else None, ", ".join(seen))
+        if definite:
+            _canary[tld] = verdict
+        return verdict
 
 
 def check_domain(name: str, tld: str) -> dict:
     res = lookup(name, tld)
     if res["status"] == OPEN:
-        probe = canary(tld)
-        if probe["status"] not in (TAKEN, PARKED, EXPIRING):
+        sane, why = canary(tld)
+        if sane is False:
             res["status"] = UNKNOWN
-            res["note"] = (f"registry failed its sanity check: {CANARY}.{tld} came back "
-                           f"{probe['status']}, so its 'no record' answers are not trusted")
+            res["note"] = f"registry failed its sanity check ({why}), so its 'no record' answers are not trusted"
+        elif sane is None:
+            res["status"] = UNKNOWN
+            res["note"] = f"could not run the registry sanity check ({why})"
     return res
+
+
+_trust: list[bool] = []
+_trust_lock = threading.Lock()
+
+
+def trust_store_ok() -> bool:
+    """After a certificate failure: does TLS work against a known-good host?
+    If it does, the failure belongs to that one registry. Asked once."""
+
+    with _trust_lock:
+        if not _trust:
+            ok = True
+            try:
+                req = urllib.request.Request(IANA_BOOTSTRAP, method="HEAD", headers={"User-Agent": USER_AGENT})
+                _opener.open(req, timeout=TIMEOUT).close()
+            except urllib.error.URLError as e:
+                if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+                    ok = False
+            except ssl.SSLCertVerificationError:
+                ok = False
+            except Exception:
+                pass  # no network verdict either way; failing one registry is the safe side
+            _trust.append(ok)
+        return _trust[0]
+
+
+def check_one(name: str, tld: str, vercel: "Vercel | None") -> dict:
+    """check_domain plus pricing, with every failure turned into an unknown
+    row. Raises CertError only when the local trust store is broken."""
+
+    try:
+        res = check_domain(name, tld)
+        if vercel and res["status"] == OPEN:
+            res = vercel.refine(res, tld)
+        return res
+    except CertError as e:
+        if not trust_store_ok():
+            raise
+        return result(f"{name}.{tld}", UNKNOWN, note=f"certificate for {e.host} failed verification")
+    except Exception as exc:  # one bad answer must not sink the run
+        return result(f"{name}.{tld}", UNKNOWN, note=f"check failed: {type(exc).__name__}: {exc}")
 
 
 # --- registrar refinement (optional, Vercel) ----------------------------------
@@ -478,13 +549,13 @@ class Vercel:
         status, body, _, _ = http_get(url, self.headers)
         return status, json_object(body) or {}
 
-    def token_works(self, tld: str) -> tuple[bool, str]:
-        status, doc = self._get(f"/v1/registrar/tlds/{tld}/price")
-        if status == 200 and isinstance(doc.get("purchasePrice"), (int, float)):
-            with self.lock:
-                self.base_prices[tld] = float(doc["purchasePrice"])
-            return True, ""
-        return False, f"Vercel answered {status if status is not None else 'nothing'}"
+    def token_rejected(self) -> int | None:
+        """The HTTP status if Vercel refuses the token outright, else None.
+        Any other failure is left to the per-row checks, which mark the
+        affected rows open*."""
+
+        status, _ = self._get("/v1/registrar/tlds/com/price")
+        return status if status in (401, 403) else None
 
     def base_price(self, tld: str) -> float | None:
         with self.lock:
@@ -549,9 +620,9 @@ def vercel_checked(tlds: list[str], no_price: bool) -> Vercel | None:
     v = vercel_from_env()
     if not v:
         return None
-    ok, why = v.token_works(tlds[0])
-    if not ok:
-        print(f"VERCEL_TOKEN did not work ({why}); running without price checks, "
+    rejected = v.token_rejected()
+    if rejected:
+        print(f"VERCEL_TOKEN was refused (HTTP {rejected}); running without price checks, "
               "so open names show as open*", file=sys.stderr)
         return None
     return v
@@ -613,15 +684,7 @@ def run_checks(entries: list[dict], tlds: list[str], workers: int,
 
     def work(job: tuple) -> None:
         e, tld = job
-        try:
-            res = check_domain(e["name"], tld)
-            if vercel and res["status"] == OPEN:
-                res = vercel.refine(res, tld)
-        except CertError:
-            raise
-        except Exception as exc:  # one bad answer must not sink the run
-            res = result(f"{e['name']}.{tld}", UNKNOWN, note=f"check failed: {type(exc).__name__}: {exc}")
-        e["domains"][tld] = res
+        e["domains"][tld] = check_one(e["name"], tld, vercel)
 
     total = len(jobs)
     done = 0
@@ -721,8 +784,8 @@ def render_text(doc: dict, shown: list[dict], filters_desc: str) -> str:
     checked = doc.get("checked_at", "")
     try:
         local = parse_time(checked).astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    except ValueError:
-        local = checked
+    except (TypeError, ValueError):
+        local = str(checked)
     head = f"{len(shown)} of {total} names, checked {local}"
     if filters_desc:
         head += f" (filters: {filters_desc})"
@@ -837,12 +900,7 @@ for (const t of tlds) {
   $('tldboxes').appendChild(l);
 }
 function chipText(t, r) {
-  if (!r) return '.' + t + ' -';
-  const p = r.registrar && r.registrar.price;
-  const y = r.registrar && r.registrar.years > 1 ? '/' + r.registrar.years + 'y' : '';
-  if (r.status === 'open') return '.' + t + (verified(r) ? ' open $' + Math.round(p) + y : ' open*' + (p != null ? ' $' + Math.round(p) + y : ''));
-  if (r.status === 'premium') return '.' + t + ' premium' + (p != null ? ' $' + Math.round(p).toLocaleString() + y : '');
-  return '.' + t + ' ' + r.status;
+  return '.' + t + ' ' + (r ? r.label : '-');
 }
 const rank = {open:0, premium:1, expiring:2, parked:3, reserved:4, taken:5, unknown:6};
 function render() {
@@ -889,6 +947,10 @@ render();
 
 
 def render_html(doc: dict) -> str:
+    doc = json.loads(json.dumps(doc))
+    for e in doc.get("names", []):
+        for res in (e.get("domains") or {}).values():
+            res["label"] = cell(res)
     data = (json.dumps(doc, separators=(",", ":"))
             .replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e"))
     title = html.escape(doc.get("description") or "name candidates")
@@ -912,9 +974,13 @@ def add_filter_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--limit", type=int, default=0, help="show at most N rows")
 
 
-def emit(doc: dict, args: argparse.Namespace) -> None:
+def emit(doc: dict, args: argparse.Namespace) -> int:
     tlds = doc["tlds"]
-    shown = sorted(apply_filters(doc["names"], tlds, args), key=lambda e: sort_key(e, tlds))
+    try:
+        shown = sorted(apply_filters(doc["names"], tlds, args), key=lambda e: sort_key(e, tlds))
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     if args.limit:
         shown = shown[: args.limit]
     print(render_text(doc, shown, describe_filters(args, tlds)))
@@ -922,11 +988,14 @@ def emit(doc: dict, args: argparse.Namespace) -> None:
         Path(args.html).parent.mkdir(parents=True, exist_ok=True)
         Path(args.html).write_text(render_html(doc), encoding="utf-8")
         print(f"\nhtml view: {Path(args.html).resolve()}")
+    return 0
 
 
 def cmd_check(args: argparse.Namespace) -> int:
     try:
         tlds = parse_tlds(args.tlds)
+        if args.open:
+            parse_tlds(args.open)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -964,13 +1033,15 @@ def cmd_check(args: argparse.Namespace) -> int:
     if args.out:
         Path(args.out).write_text(json.dumps(doc, indent=1), encoding="utf-8")
         print(f"results: {Path(args.out).resolve()}", file=sys.stderr)
-    emit(doc, args)
-    return 0
+    return emit(doc, args)
 
 
-CERT_HELP = ("TLS certificate check failed ({}). Every lookup would fail the same way, so the run "
-             "stopped. On macOS with Python from python.org, run 'Install Certificates.command' in "
-             "the Python folder under Applications, then try again.")
+CERT_HELP = ("TLS certificate check failed ({}), and it also fails against data.iana.org, so this "
+             "computer's certificate store is the problem and every lookup would fail. "
+             + ("On macOS with Python from python.org, run 'Install Certificates.command' in the "
+                "Python folder under Applications, then try again." if sys.platform == "darwin"
+                else "Install or update your system's CA certificates (for example the "
+                     "ca-certificates package), then try again."))
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -982,8 +1053,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     if age > 24 * 3600:
         print("warning: these results are over a day old or undated. Re-run check before "
               "trusting an open domain.", file=sys.stderr)
-    emit(doc, args)
-    return 0
+    return emit(doc, args)
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -1001,10 +1071,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         try:
             if tld not in vercel_cache:
                 vercel_cache[tld] = vercel_checked([tld], args.no_price)
-            vercel = vercel_cache[tld]
-            res = check_domain(name, tld)
-            if vercel and res["status"] == OPEN:
-                res = vercel.refine(res, tld)
+            res = check_one(name, tld, vercel_cache[tld])
         except CertError as e:
             print(CERT_HELP.format(e), file=sys.stderr)
             return 3
