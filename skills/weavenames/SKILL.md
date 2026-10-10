@@ -18,11 +18,15 @@ Below, `WN` means `python3 <skill dir>/scripts/weavenames.py`.
 1. **Never call a domain available unless the script printed `open` for it in
    this session.** Not from memory, not because it sounds obscure, not from a web
    search. If you have not checked it, say "not checked".
-2. **`unknown` is not available.** It means the registry did not answer after
-   five tries. Say so, and re-check with `WN verify <domain>` if the name matters.
-3. **`open*` means unregistered, price not checked.** Without a Vercel token the
-   script cannot see premium or registry-reserved names, which also look
-   unregistered. Say "unregistered (price not checked)", never "free" or "$11".
+2. **`unknown` is not available.** It means the script got no usable registry
+   answer: no reply after retries, a redirect, a reply it could not read, or an
+   extension it does not support. Say so, and re-check with `WN verify <domain>`
+   if the name matters.
+3. **`open*` means unregistered, price not verified.** The script cannot rule
+   out premium or registry-reserved names, which also look unregistered, unless
+   a Vercel token confirmed the standard price for that row. Say "unregistered
+   (price not verified)", never "free" and never the price as if it were
+   confirmed. A plain `open $11` with no star is the only verified price.
 4. **Re-verify your final picks** with `WN verify` right before you recommend
    them. It takes a second and the answer is fresh.
 5. **Report what the script reported.** If a filter leaves 6 names, show 6. Do not
@@ -70,40 +74,41 @@ What makes a good batch:
   nothing to work with.
 - **No suffix farming.** Do not use any ending or root more than three times in
   a batch. A batch that reads Proxel, Vexel, Nexel, Zaxel is broken.
-- **Not a literal description.** "PaymentCalcPro" names the feature, not the
-  product.
+- **Not a literal description.** "MetronomeTrackerApp" names the feature, not
+  the product.
 - **Lowercase letters and digits only, 3 to 20 characters,** unless they asked
   for something else. Hyphens are allowed by registries but people forget them;
   avoid them unless asked.
 - **Match their constraints exactly.** If they said 8 letters or fewer, every
   line is 8 or fewer.
 
-Save it somewhere scratch, for example `/tmp/weavenames-<slug>/names.txt`.
+Save it in a scratch folder, for example `/tmp/weavenames-<slug>/names.txt`, and
+write their description, as they gave it, to `/tmp/weavenames-<slug>/about.txt`.
+Pass the description by file, never inside quotes on the command line, so
+nothing in it gets run by the shell.
 
 ### 3. Check them
 
 ```bash
-WN check /tmp/weavenames-<slug>/names.txt -d "<their description>" \
+WN check /tmp/weavenames-<slug>/names.txt \
+  --description-file /tmp/weavenames-<slug>/about.txt \
   --out /tmp/weavenames-<slug>/results.json \
   --html /tmp/weavenames-<slug>/names.html
 ```
 
 Add `--tlds com,ai` (and so on) for more extensions; the first one listed is the
-main one and sorts the results. Add `--extras github,npm` if they care about the
-GitHub username or the npm package. A .com-only run of 150 names takes a few
-seconds. .app and .dev are slower, about one name per second, because Google's
-registry limits request rates.
+main one and sorts the results. Two-part extensions such as .co.uk are not
+supported. A .com-only run of 150 names takes a few seconds. .app and .dev are
+slower, about one name per second, because Google's registry limits request
+rates.
 
 ### 4. Go another round if the pool is thin
 
 If fewer than about 15 names you would actually recommend came back `open` on
 the main extension, write another batch. Lean toward the styles and patterns
 that came back open, and drop the ones that were all taken. Append it to the
-same file and re-run with `--reuse` so only the new names get queried:
-
-```bash
-WN check names.txt -d "..." --reuse results.json --out results.json --html names.html
-```
+same file and run the same `check` command again. It re-checks every name, so
+every answer is from this run.
 
 Three rounds is usually enough. If it is still thin, say so plainly.
 
@@ -128,18 +133,21 @@ Do not paste the whole table unless they ask.
 They can filter in plain words. Map it to `show`, which re-filters the saved
 results without querying again:
 
+Use the full folder path from step 3 in every command; a shell variable set in
+one command is gone by the next.
+
 | They say | Run |
 |---|---|
-| "only ones with the .com" | `WN show results.json --available-only` |
-| "8 letters or fewer" | `WN show results.json --max-len 8` |
-| "has to have 'strum' in it" | `WN show results.json --include strum` |
-| "no 'ly' endings" | `WN show results.json --exclude ly` |
-| "just compounds and blends" | `WN show results.json --style compound,blend` |
-| ".com and .ai both open" | `WN show results.json --open com,ai` |
-| "anything with an open domain" | `WN show results.json --any-open` |
+| "only ones with the .com" | `WN show /tmp/weavenames-<slug>/results.json --available-only` |
+| "8 letters or fewer" | `WN show /tmp/weavenames-<slug>/results.json --max-len 8` |
+| "has to have 'strum' in it" | `WN show /tmp/weavenames-<slug>/results.json --include strum` |
+| "no 'ly' endings" | `WN show /tmp/weavenames-<slug>/results.json --exclude ly` |
+| "just compounds and blends" | `WN show /tmp/weavenames-<slug>/results.json --style compound,blend` |
+| ".com and .ai both open" | `WN show /tmp/weavenames-<slug>/results.json --open com,ai` |
+| "anything with an open domain" | `WN show /tmp/weavenames-<slug>/results.json --any-open` |
 
-Filters combine. Add `--limit 20` to cap the rows, and `--html names.html` to
-redraw the page. Results older than a day come with a warning; re-run `check`
+Filters combine. Add `--limit 20` to cap the rows, and `--html` to
+redraw the page (`--html /tmp/weavenames-<slug>/names.html`). Results older than a day come with a warning; re-run `check`
 before you trust an open answer that old.
 
 ### 7. Before they commit to a name
@@ -168,19 +176,22 @@ WN verify fretwise.com fretwise.ai
 
 | Status | What the script saw |
 |---|---|
-| `open` | The registry has no record. With a Vercel token: the registrar sells it at the standard price shown. |
-| `open*` | The registry has no record. Price not checked, so premium or reserved is still possible. |
+| `open $11` | The registry has no record, and the registrar confirmed it sells at the standard price shown. Needs a Vercel token. |
+| `open*` | The registry has no record. Price not verified for this row, so premium or reserved is still possible. A price after the star is the registrar's quote, not a confirmed standard price. |
 | `premium` | No registry record, but the registrar prices it well above standard. The price is shown. |
 | `reserved` | No registry record, but the registrar will not sell it. |
 | `taken` | The registry returned a registration. |
 | `parked` | Taken, and its nameservers belong to a parking or domain-sale service. Often buyable from a reseller, at a markup. |
 | `expiring` | Taken but in redemption or pending delete. It may drop back to open. |
-| `unknown` | No usable answer after five tries. Never counted as open. |
+| `unknown` | No usable registry answer. Never counted as open. |
 
 Where the answers come from: .com and .net from Verisign, and most other
 extensions from their registry's RDAP server, located through IANA's bootstrap
 file. .io, .co, .sh, .me, .so and .gg have no RDAP server, so their registry's
 WHOIS is used instead, and an unrecognized WHOIS reply is reported as `unknown`.
+Redirects are never followed, a "not found" only counts when it comes back as a
+real RDAP reply, and before any name on an extension is called open, the script
+confirms that registry reports google.<extension> as registered.
 Every answer is stored in `results.json` with the URL or server that gave it and
 the time.
 
@@ -191,7 +202,5 @@ None of this is required. Each item makes one part sharper.
 - **`VERCEL_TOKEN`**: turns `open*` into a priced `open`, and catches premium
   and reserved names. Any free Vercel account works. Create a token at
   https://vercel.com/account/tokens and export it. If it is a team token, also
-  export `VERCEL_TEAM_ID`.
-- **`GITHUB_TOKEN`, or being logged in with `gh`**: GitHub limits anonymous
-  username checks to 60 an hour, which a single run can use up. Only matters with
-  `--extras github`.
+  export `VERCEL_TEAM_ID`. A token that does not work is reported once and the
+  run continues unpriced.

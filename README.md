@@ -41,7 +41,7 @@ Ask in plain words:
 > I need a name for a CLI that cleans up dotfiles. Short, and the .com has to be
 > open.
 
-> Is hearthpair.com taken?
+> Is lumenfret.com taken?
 
 Claude writes about 150 candidates in a mix of styles, the bundled script checks
 every one, and you get a short recommendation plus a filterable page with the
@@ -53,20 +53,22 @@ full list. Then filter by talking:
 
 | Status | Meaning |
 |---|---|
-| open | The registry has no record of the domain. With a Vercel token, the registrar also sells it at the standard price, shown. |
-| open* | The registry has no record. Price not checked, so a premium or reserved name is still possible. |
+| open $11 | The registry has no record, and the registrar confirmed it sells at the standard price shown. Needs a Vercel token. |
+| open* | The registry has no record. Price not verified, so a premium or reserved name is still possible. |
 | premium | No registry record, but it is priced well above standard. |
 | reserved | No registry record, but no registrar will sell it. |
 | taken | Registered. |
 | parked | Registered, and parked at a domain-sale service. Often buyable from a reseller, at a markup. |
 | expiring | Registered, but in redemption or pending delete. |
-| unknown | The registry did not answer after five tries. Never counted as open. |
+| unknown | No usable registry answer: no reply after retries, a redirect, an unreadable reply, or an unsupported extension. Never counted as open. |
 
 Answers come straight from the registries: .com and .net from Verisign, most
 other extensions from their registry's RDAP server (found through IANA's
 bootstrap list), and .io, .co, .sh, .me, .so and .gg from their registry's
-WHOIS, since those have no RDAP server. Every answer is saved with the server
-that gave it and the time.
+WHOIS, since those have no RDAP server. Redirects are never followed, a "not
+found" only counts when it is a real RDAP reply, and each registry must first
+report google.<extension> as registered before any name on it is called open.
+Every answer is saved with the server that gave it and the time.
 
 ## Optional setup
 
@@ -74,8 +76,6 @@ that gave it and the time.
   reserved names, which a registry lookup alone cannot see. Any free Vercel
   account works: create a token at https://vercel.com/account/tokens. Add
   `VERCEL_TEAM_ID` if it is a team token.
-- **`GITHUB_TOKEN`**, or being logged in with `gh`, only if you ask it to check
-  GitHub usernames. Anonymous checks are limited to 60 an hour.
 
 ## The script on its own
 
@@ -83,7 +83,7 @@ The checker works without Claude too:
 
 ```bash
 S=skills/weavenames/scripts/weavenames.py
-python3 $S verify hearthpair.com hearthpair.ai
+python3 $S verify lumenfret.com lumenfret.ai
 python3 $S check names.txt --tlds com,ai --out results.json --html names.html
 python3 $S show results.json --available-only --max-len 9 --include strum
 ```

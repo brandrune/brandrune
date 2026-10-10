@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ssl
 import sys
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "weav
 import weavenames as wn  # noqa: E402
 
 COM = "https://rdap.verisign.com/com/v1/"
+RDAP_CT = "application/rdap+json"
 
 
 def rdap_record(domain: str, statuses=(), nameservers=()) -> bytes:
@@ -40,7 +42,8 @@ class FakeHTTP:
         self.calls.append(url)
         for prefix, queue in self.answers.items():
             if url.split("?")[0] == prefix:
-                return queue.pop(0) if len(queue) > 1 else queue[0]
+                ans = queue.pop(0) if len(queue) > 1 else queue[0]
+                return ans if len(ans) == 4 else (*ans, RDAP_CT)
         raise AssertionError(f"unexpected URL {url}")
 
 
@@ -116,8 +119,8 @@ class RetryTests(unittest.TestCase):
         def fake_urlopen(req, timeout):
             raise seq.pop(0)
 
-        with mock.patch("urllib.request.urlopen", fake_urlopen), mock.patch.object(wn, "backoff", lambda *a: None):
-            status, _, err = wn.http_get("https://x.test/domain/foo.com")
+        with mock.patch.object(wn._opener, "open", fake_urlopen), mock.patch.object(wn, "backoff", lambda *a: None):
+            status, _, err, _ = wn.http_get("https://x.test/domain/foo.com")
         self.assertEqual(status, 404)
         self.assertEqual(seq, [])
 
@@ -128,8 +131,8 @@ class RetryTests(unittest.TestCase):
             calls.append(1)
             raise self._http_error(429)
 
-        with mock.patch("urllib.request.urlopen", fake_urlopen), mock.patch.object(wn, "backoff", lambda *a: None):
-            status, _, err = wn.http_get("https://x.test/domain/foo.com")
+        with mock.patch.object(wn._opener, "open", fake_urlopen), mock.patch.object(wn, "backoff", lambda *a: None):
+            status, _, err, _ = wn.http_get("https://x.test/domain/foo.com")
         self.assertIsNone(status)
         self.assertEqual(len(calls), wn.RETRIES)
         self.assertIn("429", err)
@@ -275,34 +278,162 @@ class RenderTests(unittest.TestCase):
     def test_unpriced_open_is_marked_and_explained(self):
         out = wn.render_text(self.doc(), self.doc()["names"], "")
         self.assertIn("open*", out)
-        self.assertIn("Price not checked", out)
+        self.assertIn("price was not verified", out)
         self.assertIn("Not counted as open", out)
 
     def test_html_escapes_the_description(self):
         page = wn.render_html(self.doc())
         self.assertNotIn("</script><b>", page)
+        d = self.doc()
+        d["description"] = "<!--<script>"
+        self.assertNotIn("<!--<script>", wn.render_html(d).split('id="data"')[1])
         self.assertIn("color-scheme: light", page)
 
 
-class ReuseTests(unittest.TestCase):
-    def test_reuses_fresh_answers_and_rechecks_stale_and_unknown(self):
-        import tempfile
-        fresh = wn.now_iso()
-        prior = {"names": [
-            {"name": "hearth", "domains": {"com": {"status": "taken", "registry": {"at": fresh}}}},
-            {"name": "zenolia", "domains": {"com": {"status": "unknown", "registry": {"at": fresh}}}},
-            {"name": "old", "domains": {"com": {"status": "open", "registry": {"at": "2020-01-01T00:00:00+00:00"}}}},
-            {"name": "cheap", "domains": {"com": {"status": "open", "registry": {"at": fresh}}}},
-        ]}
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump(prior, f)
-        entries = [{"name": n, "style": None, "length": len(n)} for n in ("hearth", "zenolia", "old", "cheap", "new")]
-        self.assertEqual(wn.reuse_results(entries, f.name, priced=True), 1)
-        self.assertEqual(entries[0]["domains"]["com"]["status"], "taken")
-        for e in entries[1:]:
-            self.assertNotIn("com", e.get("domains", {}))
-        entries = [{"name": "cheap", "style": None, "length": 5}]
-        self.assertEqual(wn.reuse_results(entries, f.name, priced=False), 1)
+class RedirectAndContentTypeTests(unittest.TestCase):
+    def test_html_404_is_unknown(self):
+        fake = FakeHTTP({COM + "domain/foo.com": [(404, b"<html>Not Found</html>", "", "text/html")]})
+        with mock.patch.object(wn, "http_get", fake):
+            self.assertEqual(wn.check_rdap("foo", "com", COM)["status"], wn.UNKNOWN)
+
+    def test_redirect_is_not_followed(self):
+        import email.message
+        import urllib.error
+
+        def fake_open(req, timeout):
+            h = email.message.Message()
+            h["Location"] = "https://elsewhere.test/404"
+            raise urllib.error.HTTPError(req.full_url, 302, "Found", h, None)
+
+        with mock.patch.object(wn._opener, "open", fake_open):
+            status, _, _, _ = wn.http_get(COM + "domain/foo.com")
+        self.assertEqual(status, 302)
+        fake = FakeHTTP({COM + "domain/foo.com": [(302, b"", "", "text/html")]})
+        with mock.patch.object(wn, "http_get", fake):
+            self.assertEqual(wn.check_rdap("foo", "com", COM)["status"], wn.UNKNOWN)
+
+    def test_no_redirect_handler_is_installed(self):
+        handlers = [type(h).__name__ for h in wn._opener.handlers]
+        self.assertIn("_NoRedirect", handlers)
+
+    def test_json_list_is_unknown_not_a_crash(self):
+        fake = FakeHTTP({COM + "domain/foo.com": [(200, b"[1, 2]", "")]})
+        with mock.patch.object(wn, "http_get", fake):
+            self.assertEqual(wn.check_rdap("foo", "com", COM)["status"], wn.UNKNOWN)
+
+    def test_http_only_bootstrap_servers_are_dropped(self):
+        boot = {"services": [[["kg"], ["http://rdap.example.kg/"]], [["zz"], ["https://rdap.example.zz/"]]]}
+        with mock.patch.object(wn, "http_get", lambda url, headers=None: (200, json.dumps(boot).encode(), "", "application/json")), \
+             mock.patch.object(wn, "cache_dir", lambda: Path("/nonexistent/weavenames-test")):
+            table = wn.load_bootstrap()
+        self.assertNotIn("kg", table)
+        self.assertEqual(table["zz"], "https://rdap.example.zz/")
+
+
+class CanaryTests(unittest.TestCase):
+    def setUp(self):
+        wn._canary.clear()
+
+    def tearDown(self):
+        wn._canary.clear()
+
+    def test_open_is_downgraded_when_the_canary_is_not_registered(self):
+        fake = FakeHTTP({COM + "domain/foo.com": [(404, b"", "")], COM + "domain/google.com": [(404, b"", "")]})
+        with mock.patch.object(wn, "http_get", fake), mock.patch.object(wn, "rdap_base", lambda t: COM):
+            r = wn.check_domain("foo", "com")
+        self.assertEqual(r["status"], wn.UNKNOWN)
+        self.assertIn("sanity check", r["note"])
+
+    def test_open_stands_when_the_canary_is_registered_and_is_asked_once(self):
+        fake = FakeHTTP({COM + "domain/foo.com": [(404, b"", "")], COM + "domain/bar.com": [(404, b"", "")],
+                         COM + "domain/google.com": [(200, rdap_record("google.com"), "")]})
+        with mock.patch.object(wn, "http_get", fake), mock.patch.object(wn, "rdap_base", lambda t: COM):
+            self.assertEqual(wn.check_domain("foo", "com")["status"], wn.OPEN)
+            self.assertEqual(wn.check_domain("bar", "com")["status"], wn.OPEN)
+        self.assertEqual(fake.calls.count(COM + "domain/google.com"), 1)
+
+
+class LabelTests(unittest.TestCase):
+    def test_names_registries_reject(self):
+        self.assertFalse(wn.valid_label("ab--cd"))
+        self.assertFalse(wn.valid_label("xn--zzzzzz"))
+        self.assertTrue(wn.valid_label("xn--bcher-kva"))
+        self.assertTrue(wn.valid_label("a-b-c"))
+
+    def test_multi_label_tld_is_refused(self):
+        with self.assertRaises(ValueError):
+            wn.parse_tlds("com,co.uk")
+
+
+class PriceLabelTests(unittest.TestCase):
+    """The label a user sees, not just the note behind it."""
+
+    def label_after(self, answers):
+        v = wn.Vercel("token")
+        with mock.patch.object(wn, "http_get", FakeHTTP({wn.VERCEL_API + k: x for k, x in answers.items()})):
+            return wn.cell(v.refine(wn.result("foo.com", wn.OPEN), "com")), v
+
+    def test_verified_standard_price_has_no_star(self):
+        label, _ = self.label_after({
+            "/v1/registrar/domains/foo.com/availability": [(200, b'{"available": true}', "")],
+            "/v1/registrar/domains/foo.com/price": [(200, b'{"years": 1, "purchasePrice": 11.25}', "")],
+            "/v1/registrar/tlds/com/price": [(200, b'{"years": 1, "purchasePrice": 11.25}', "")],
+        })
+        self.assertEqual(label, "open $11")
+
+    def test_failed_availability_check_keeps_the_star(self):
+        label, _ = self.label_after({"/v1/registrar/domains/foo.com/availability": [(401, b'{}', "")]})
+        self.assertEqual(label, "open*")
+
+    def test_failed_standard_price_keeps_the_star_and_is_not_remembered(self):
+        label, v = self.label_after({
+            "/v1/registrar/domains/foo.com/availability": [(200, b'{"available": true}', "")],
+            "/v1/registrar/domains/foo.com/price": [(200, b'{"years": 1, "purchasePrice": 2400}', "")],
+            "/v1/registrar/tlds/com/price": [(None, b"", "HTTP 503")],
+        })
+        self.assertEqual(label, "open* $2,400")
+        self.assertNotIn("com", v.base_prices)
+
+    def test_failed_price_lookup_keeps_the_star(self):
+        label, _ = self.label_after({
+            "/v1/registrar/domains/foo.com/availability": [(200, b'{"available": true}', "")],
+            "/v1/registrar/domains/foo.com/price": [(500, b'', "")],
+            "/v1/registrar/tlds/com/price": [(200, b'{"purchasePrice": 11.25}', "")],
+        })
+        self.assertEqual(label, "open*")
+
+    def test_bad_token_falls_back_to_unpriced(self):
+        with mock.patch.dict("os.environ", {"VERCEL_TOKEN": "bad"}), \
+             mock.patch.object(wn, "http_get", FakeHTTP({wn.VERCEL_API + "/v1/registrar/tlds/com/price": [(401, b"{}", "")]})):
+            self.assertIsNone(wn.vercel_checked(["com"], False))
+
+
+class FailureIsolationTests(unittest.TestCase):
+    def test_one_crashing_lookup_becomes_an_unknown_row(self):
+        entries = [{"name": "foo", "style": None, "length": 3}, {"name": "bar", "style": None, "length": 3}]
+
+        def boom(name, tld):
+            if name == "foo":
+                raise KeyError("x")
+            return wn.result(f"{name}.{tld}", wn.TAKEN)
+
+        with mock.patch.object(wn, "check_domain", boom):
+            wn.run_checks(entries, ["com"], 2, None, progress=False)
+        self.assertEqual(entries[0]["domains"]["com"]["status"], wn.UNKNOWN)
+        self.assertEqual(entries[1]["domains"]["com"]["status"], wn.TAKEN)
+
+    def test_certificate_failure_stops_without_retrying(self):
+        import urllib.error
+        calls = []
+
+        def fake_open(req, timeout):
+            calls.append(1)
+            raise urllib.error.URLError(ssl.SSLCertVerificationError("self signed"))
+
+        with mock.patch.object(wn._opener, "open", fake_open), mock.patch.object(wn, "backoff", lambda *a: None):
+            with self.assertRaises(wn.CertError):
+                wn.http_get("https://x.test/")
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

@@ -11,8 +11,11 @@ whether a domain is open, and it only says so when a registry answered.
 Standard library only, Python 3.9 or newer. Nothing to install.
 
 How each status is earned:
-  open      the TLD's registry has no record (RDAP 404 or WHOIS "not found").
-            With VERCEL_TOKEN set it is also buyable at the standard price.
+  open      the TLD's registry has no record (an RDAP 404 served as
+            application/rdap+json, or a WHOIS "not found"), and the registry
+            passed a sanity check this run (google.<tld> came back registered).
+            Shown as "open $11" only when Vercel also confirmed it is buyable at
+            the standard price; otherwise "open*", price not verified.
   premium   no registry record, but the registrar prices it well above the
             TLD's standard price (needs VERCEL_TOKEN).
   reserved  no registry record, but the registrar will not sell it
@@ -21,8 +24,9 @@ How each status is earned:
   parked    taken, and its nameservers belong to a parking or domain-sale
             service, so it is probably for sale by a domainer.
   expiring  taken, but in redemption or pending delete.
-  unknown   anything else: timeouts, rate limits after every retry, an answer
-            this script could not parse. Never counted as open.
+  unknown   anything else: timeouts, rate limits after every retry, redirects,
+            an answer this script could not parse, a registry that failed its
+            sanity check. Never counted as open.
 """
 
 from __future__ import annotations
@@ -34,9 +38,8 @@ import json
 import os
 import random
 import re
-import shutil
 import socket
-import subprocess
+import ssl
 import sys
 import threading
 import time
@@ -46,7 +49,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 USER_AGENT = f"weavenames/{VERSION} (+https://github.com/weavenames/weavenames)"
 
 OPEN = "open"
@@ -109,16 +112,25 @@ PARKING_NS = (
 PENDING = ("pending delete", "pendingdelete", "redemption period", "redemptionperiod",
            "pending restore", "pendingrestore")
 
-# GitHub answers 404 for these, but nobody can register them.
-GITHUB_RESERVED = {
-    "about", "admin", "api", "apps", "blog", "business", "contact", "dashboard",
-    "enterprise", "explore", "features", "github", "help", "login", "marketplace",
-    "new", "notifications", "orgs", "pricing", "search", "security", "settings",
-    "site", "sponsors", "support", "team", "topics", "trending", "users",
-}
-
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 STYLE_RE = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
+CANARY = "google"  # registered on every TLD this script supports; checked once per TLD per run
+
+
+def valid_label(name: str) -> bool:
+    """A label a registry will accept: LDH, and no '--' in positions 3-4
+    unless it is a well-formed punycode (xn--) label."""
+
+    if not NAME_RE.match(name):
+        return False
+    if name[2:4] == "--":
+        if not name.startswith("xn--"):
+            return False
+        try:
+            name.encode("ascii").decode("idna")
+        except UnicodeError:
+            return False
+    return True
 VERCEL_API = "https://api.vercel.com"
 PREMIUM_RATIO = 1.5
 
@@ -126,7 +138,6 @@ PREMIUM_RATIO = 1.5
 # requests and answers cleanly at one per second; WHOIS servers throttle by IP.
 HOST_LIMITS = {
     "pubapi.registry.google": (1, 1.0),
-    "api.github.com": (4, 0.0),
     "api.vercel.com": (4, 0.1),
 }
 DEFAULT_HOST_LIMIT = (6, 0.0)
@@ -182,11 +193,26 @@ def backoff(attempt: int, retry_after: str | None = None) -> None:
     time.sleep(delay)
 
 
-def http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int | None, bytes, str]:
-    """GET with per-host pacing and retries on 429, 5xx and network errors.
+class CertError(Exception):
+    """TLS certificate verification failed. Retrying cannot fix this."""
 
-    Returns (status, body, error). status is None when every attempt failed
-    without an HTTP answer.
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # A registry answers in place. A redirect is not an answer, and following
+    # one would forward Authorization headers to another host.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
+def http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int | None, bytes, str, str]:
+    """GET with per-host pacing and retries on 429, 5xx and network errors.
+    Redirects are never followed; they come back as their 3xx status.
+
+    Returns (status, body, error, content_type). status is None when every
+    attempt failed without an HTTP answer.
     """
 
     host = urllib.parse.urlparse(url).hostname or ""
@@ -198,23 +224,37 @@ def http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int | Non
         try:
             with gate_for(host):
                 req = urllib.request.Request(url, headers=hdrs)
-                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                    return r.status, r.read(), ""
+                with _opener.open(req, timeout=TIMEOUT) as r:
+                    return r.status, r.read(), "", r.headers.get("Content-Type", "") or ""
         except urllib.error.HTTPError as e:
             try:
                 body = e.read() or b""
             except Exception:  # an HTTPError with no body raises on 3.9
                 body = b""
+            ctype = (e.headers.get("Content-Type", "") if e.headers else "") or ""
             if e.code == 429 or e.code >= 500:
                 last_err = f"HTTP {e.code}"
                 retry_after = e.headers.get("Retry-After") if e.headers else None
             else:
-                return e.code, body, ""
+                return e.code, body, "", ctype
         except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
-            last_err = f"{type(e).__name__}: {getattr(e, 'reason', e)}"
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, ssl.SSLCertVerificationError) or isinstance(e, ssl.SSLCertVerificationError):
+                raise CertError(str(reason)) from None
+            last_err = f"{type(e).__name__}: {reason}"
         if attempt < RETRIES - 1:
             backoff(attempt, retry_after)
-    return None, b"", last_err or "no answer"
+    return None, b"", last_err or "no answer", ""
+
+
+def json_object(body: bytes) -> dict | None:
+    """Parse a JSON object. Anything else (a list, null, garbage) is None."""
+
+    try:
+        doc = json.loads(body) if body else {}
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
 
 
 def whois_query(server: str, query: str) -> tuple[str | None, str]:
@@ -271,20 +311,26 @@ def load_bootstrap() -> dict[str, str]:
     except (OSError, ValueError):
         data = None
     if data is None:
-        status, body, _ = http_get(IANA_BOOTSTRAP)
+        status, body, _, _ = http_get(IANA_BOOTSTRAP)
         if status == 200:
-            try:
-                data = json.loads(body)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(body)
-            except (OSError, ValueError):
-                data = data if isinstance(data, dict) else None
+            data = json_object(body)
+            if data is not None:
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(body)
+                except OSError:
+                    pass
     out = dict(FALLBACK_RDAP)
     if isinstance(data, dict):
-        for tlds, urls in data.get("services", []):
-            https = [u for u in urls if u.startswith("https://")] or urls
+        for service in data.get("services", []) or []:
+            if not (isinstance(service, list) and len(service) == 2):
+                continue
+            tlds, urls = service
+            https = [u for u in urls if isinstance(u, str) and u.startswith("https://")]
+            if not https:
+                continue  # an http-only server can be answered by anyone on the path
             for t in tlds:
-                out[t.lower()] = https[0] if https[0].endswith("/") else https[0] + "/"
+                out[str(t).lower()] = https[0] if https[0].endswith("/") else https[0] + "/"
     return out
 
 
@@ -308,31 +354,32 @@ def parked_by(nameservers: list[str]) -> str | None:
 def check_rdap(name: str, tld: str, base: str) -> dict:
     domain = f"{name}.{tld}"
     url = f"{base}domain/{domain}"
-    status, body, err = http_get(url, {"Accept": "application/rdap+json, application/json"})
+    status, body, err, ctype = http_get(url, {"Accept": "application/rdap+json, application/json"})
     evidence = {"source": url, "answer": status if status is not None else err, "at": now_iso()}
     if status is None:
         return result(domain, UNKNOWN, registry=evidence, note=f"registry did not answer ({err})")
     if status == 404:
-        # A real registry 404 is the authoritative "no such domain". A proxy
-        # that has no server for the TLD also says 404 (rdap.org does this for
-        # every .io name), so a body that says so is not an answer.
-        try:
-            doc = json.loads(body) if body else {}
-        except ValueError:
-            doc = {}
+        # A registry's 404 is the authoritative "no such domain", and every
+        # registry probed sends it as application/rdap+json. A 404 from a
+        # proxy, a captive portal or a moved server is an HTML page or a JSON
+        # error saying there is no RDAP service (rdap.org does this for every
+        # .io name). Neither is an answer.
+        if "application/rdap+json" not in ctype.lower():
+            return result(domain, UNKNOWN, registry=evidence,
+                          note=f"404 was not an RDAP reply (Content-Type {ctype or 'missing'})")
+        doc = json_object(body) or {}
         title = str(doc.get("title", "")) + " " + " ".join(map(str, doc.get("description", []) or []))
         if "no rdap service" in title.lower():
             return result(domain, UNKNOWN, registry=evidence, note="no RDAP service for this TLD")
         return result(domain, OPEN, registry=evidence)
     if status != 200:
         return result(domain, UNKNOWN, registry=evidence, note=f"registry answered HTTP {status}")
-    try:
-        doc = json.loads(body)
-    except ValueError:
-        return result(domain, UNKNOWN, registry=evidence, note="registry reply was not JSON")
+    doc = json_object(body)
+    if doc is None:
+        return result(domain, UNKNOWN, registry=evidence, note="registry reply was not a JSON object")
     ldh = str(doc.get("ldhName", "")).lower().rstrip(".")
-    if doc.get("objectClassName") != "domain" and ldh != domain:
-        return result(domain, UNKNOWN, registry=evidence, note="registry reply was not a domain record")
+    if doc.get("objectClassName") != "domain" or ldh != domain:
+        return result(domain, UNKNOWN, registry=evidence, note="registry reply was not this domain's record")
     statuses = [str(s).lower() for s in doc.get("status", []) or []]
     nameservers = [str(n.get("ldhName", "")).lower().rstrip(".")
                    for n in doc.get("nameservers", []) or [] if isinstance(n, dict)]
@@ -370,7 +417,7 @@ def check_whois(name: str, tld: str) -> dict:
     return result(domain, UNKNOWN, registry=evidence, note=f"unrecognized WHOIS reply: {first}")
 
 
-def check_domain(name: str, tld: str) -> dict:
+def lookup(name: str, tld: str) -> dict:
     base = rdap_base(tld)
     if base:
         return check_rdap(name, tld, base)
@@ -379,27 +426,65 @@ def check_domain(name: str, tld: str) -> dict:
     return result(f"{name}.{tld}", UNKNOWN, note=f"no RDAP or known WHOIS server for .{tld}")
 
 
+_canary: dict[str, dict] = {}
+_canary_locks: dict[str, threading.Lock] = {}
+_canary_guard = threading.Lock()
+
+
+def canary(tld: str) -> dict:
+    """Look up a name known to be registered, once per TLD per run. If the
+    registry does not return it as registered, nothing it says about other
+    names on that TLD is trusted."""
+
+    with _canary_guard:
+        lock = _canary_locks.setdefault(tld, threading.Lock())
+    with lock:
+        if tld not in _canary:
+            _canary[tld] = lookup(CANARY, tld)
+        return _canary[tld]
+
+
+def check_domain(name: str, tld: str) -> dict:
+    res = lookup(name, tld)
+    if res["status"] == OPEN:
+        probe = canary(tld)
+        if probe["status"] not in (TAKEN, PARKED, EXPIRING):
+            res["status"] = UNKNOWN
+            res["note"] = (f"registry failed its sanity check: {CANARY}.{tld} came back "
+                           f"{probe['status']}, so its 'no record' answers are not trusted")
+    return res
+
+
 # --- registrar refinement (optional, Vercel) ----------------------------------
 
 
 class Vercel:
     """Asks Vercel's registrar whether an unregistered domain is buyable, and
     at what price. A registry 404 cannot tell premium or reserved names apart
-    from ordinary ones; a registrar can."""
+    from ordinary ones; a registrar can.
+
+    A row is marked verified only when the registrar said available, returned
+    a price, the TLD's standard price is known, and the price is within the
+    premium ratio of it. Every other open row stays open*."""
 
     def __init__(self, token: str) -> None:
         self.headers = {"Authorization": f"Bearer {token}"}
         self.team = os.environ.get("VERCEL_TEAM_ID")
-        self.base_prices: dict[str, float | None] = {}
+        self.base_prices: dict[str, float] = {}
         self.lock = threading.Lock()
 
     def _get(self, path: str) -> tuple[int | None, dict]:
-        url = VERCEL_API + path + (f"?teamId={self.team}" if self.team else "")
-        status, body, _ = http_get(url, self.headers)
-        try:
-            return status, json.loads(body) if body else {}
-        except ValueError:
-            return status, {}
+        url = VERCEL_API + path + (f"?teamId={urllib.parse.quote(self.team)}" if self.team else "")
+        status, body, _, _ = http_get(url, self.headers)
+        return status, json_object(body) or {}
+
+    def token_works(self, tld: str) -> tuple[bool, str]:
+        status, doc = self._get(f"/v1/registrar/tlds/{tld}/price")
+        if status == 200 and isinstance(doc.get("purchasePrice"), (int, float)):
+            with self.lock:
+                self.base_prices[tld] = float(doc["purchasePrice"])
+            return True, ""
+        return False, f"Vercel answered {status if status is not None else 'nothing'}"
 
     def base_price(self, tld: str) -> float | None:
         with self.lock:
@@ -407,17 +492,18 @@ class Vercel:
                 return self.base_prices[tld]
         status, doc = self._get(f"/v1/registrar/tlds/{tld}/price")
         price = doc.get("purchasePrice") if status == 200 else None
-        price = float(price) if isinstance(price, (int, float)) else None
+        if not isinstance(price, (int, float)):
+            return None  # not remembered: the next row asks again
         with self.lock:
-            self.base_prices[tld] = price
-        return price
+            self.base_prices[tld] = float(price)
+        return float(price)
 
     def refine(self, res: dict, tld: str) -> dict:
         domain = res["domain"]
         at = now_iso()
         status, doc = self._get(f"/v1/registrar/domains/{domain}/availability")
         if status != 200 or not isinstance(doc.get("available"), bool):
-            res["registrar"] = {"source": "vercel", "answer": status, "at": at}
+            res["registrar"] = {"source": "vercel", "answer": status, "verified": False, "at": at}
             res["note"] = "registrar check failed; price not verified"
             return res
         if not doc["available"]:
@@ -428,18 +514,24 @@ class Vercel:
         status, doc = self._get(f"/v1/registrar/domains/{domain}/price")
         price = doc.get("purchasePrice") if status == 200 else None
         base = self.base_price(tld)
-        reg = {"source": "vercel", "available": True, "at": at}
+        reg = {"source": "vercel", "available": True, "verified": False, "at": at}
         if isinstance(price, (int, float)):
             reg["price"] = float(price)
-            reg["years"] = doc.get("years")
+            years = doc.get("years")
+            if isinstance(years, int):
+                reg["years"] = years
         if base is not None:
             reg["standard_price"] = base
         res["registrar"] = reg
-        if isinstance(price, (int, float)) and base is not None and price > base * PREMIUM_RATIO:
+        if not isinstance(price, (int, float)):
+            res["note"] = "buyable, but the registrar returned no price; price not verified"
+        elif base is None:
+            res["note"] = "standard price for this TLD unavailable; price not verified"
+        elif price > base * PREMIUM_RATIO:
             res["status"] = PREMIUM
             res["note"] = f"priced ${price:,.2f} against a standard ${base:,.2f}"
-        elif not isinstance(price, (int, float)):
-            res["note"] = "buyable, but the registrar returned no price"
+        else:
+            reg["verified"] = True
         return res
 
 
@@ -448,60 +540,21 @@ def vercel_from_env() -> Vercel | None:
     return Vercel(token) if token else None
 
 
-# --- extras ------------------------------------------------------------------
+def vercel_checked(tlds: list[str], no_price: bool) -> Vercel | None:
+    """Vercel client after a token check, or None (with a stderr line saying
+    why) so a bad token runs unpriced instead of silently half-priced."""
 
-
-def github_token() -> str | None:
-    for var in ("GITHUB_TOKEN", "GH_TOKEN"):
-        if os.environ.get(var):
-            return os.environ[var]
-    if shutil.which("gh"):
-        try:
-            out = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5)
-            if out.returncode == 0 and out.stdout.strip():
-                return out.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
-    return None
-
-
-_gh_token: list[str | None] = []
-_gh_lock = threading.Lock()
-
-
-def check_github(name: str) -> dict:
-    with _gh_lock:
-        if not _gh_token:
-            _gh_token.append(github_token())
-    headers = {"Accept": "application/vnd.github+json"}
-    if _gh_token[0]:
-        headers["Authorization"] = f"Bearer {_gh_token[0]}"
-    url = f"https://api.github.com/users/{name}"
-    status, _, err = http_get(url, headers)
-    ev = {"source": url, "answer": status if status is not None else err, "at": now_iso()}
-    if status == 404:
-        if name in GITHUB_RESERVED:
-            return {"status": RESERVED, "registry": ev, "note": "GitHub reserved name"}
-        return {"status": OPEN, "registry": ev}
-    if status == 200:
-        return {"status": TAKEN, "registry": ev}
-    note = "rate limited; set GITHUB_TOKEN or log in with gh" if status in (403, 429) else f"answer {ev['answer']}"
-    return {"status": UNKNOWN, "registry": ev, "note": note}
-
-
-def check_npm(name: str) -> dict:
-    url = f"https://registry.npmjs.org/{name}"
-    status, _, err = http_get(url)
-    ev = {"source": url, "answer": status if status is not None else err, "at": now_iso()}
-    if status == 404:
-        return {"status": OPEN, "registry": ev,
-                "note": "npm may still refuse a name too close to an existing package"}
-    if status == 200:
-        return {"status": TAKEN, "registry": ev}
-    return {"status": UNKNOWN, "registry": ev, "note": f"answer {ev['answer']}"}
-
-
-EXTRAS = {"github": check_github, "npm": check_npm}
+    if no_price:
+        return None
+    v = vercel_from_env()
+    if not v:
+        return None
+    ok, why = v.token_works(tlds[0])
+    if not ok:
+        print(f"VERCEL_TOKEN did not work ({why}); running without price checks, "
+              "so open names show as open*", file=sys.stderr)
+        return None
+    return v
 
 
 # --- input -------------------------------------------------------------------
@@ -513,6 +566,8 @@ def parse_tlds(value: str | None) -> list[str]:
     out: list[str] = []
     for t in value.split(","):
         t = t.strip().lower().lstrip(".")
+        if "." in t:
+            raise ValueError(f".{t}: multi-label extensions such as .co.uk are not supported")
         if t and t not in out:
             out.append(t)
     return out or list(DEFAULT_TLDS)
@@ -535,7 +590,7 @@ def read_names(path: str) -> tuple[list[dict], list[str]]:
         style = parts[1].strip().lower() if len(parts) > 1 and parts[1].strip() else None
         if name.count(".") == 1 and name.split(".")[0]:
             name = name.split(".")[0]
-        if not NAME_RE.match(name) or (style and not STYLE_RE.match(style)):
+        if not valid_label(name) or (style and not STYLE_RE.match(style)):
             rejected.append(raw.strip())
             continue
         if name in seen:
@@ -548,38 +603,40 @@ def read_names(path: str) -> tuple[list[dict], list[str]]:
 # --- run ---------------------------------------------------------------------
 
 
-def run_checks(entries: list[dict], tlds: list[str], extras: list[str], workers: int,
+def run_checks(entries: list[dict], tlds: list[str], workers: int,
                vercel: Vercel | None, progress: bool = True) -> None:
     jobs = []
     for e in entries:
-        e.setdefault("domains", {})
-        e.setdefault("extras", {})
+        e["domains"] = {}
         for t in tlds:
-            if t not in e["domains"]:
-                jobs.append(("domain", e, t))
-        for x in extras:
-            if x not in e["extras"]:
-                jobs.append(("extra", e, x))
+            jobs.append((e, t))
 
     def work(job: tuple) -> None:
-        kind, e, key = job
-        if kind == "domain":
-            res = check_domain(e["name"], key)
+        e, tld = job
+        try:
+            res = check_domain(e["name"], tld)
             if vercel and res["status"] == OPEN:
-                res = vercel.refine(res, key)
-            e["domains"][key] = res
-        else:
-            e["extras"][key] = EXTRAS[key](e["name"])
+                res = vercel.refine(res, tld)
+        except CertError:
+            raise
+        except Exception as exc:  # one bad answer must not sink the run
+            res = result(f"{e['name']}.{tld}", UNKNOWN, note=f"check failed: {type(exc).__name__}: {exc}")
+        e["domains"][tld] = res
 
     total = len(jobs)
     done = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futures = [ex.submit(work, j) for j in jobs]
-        for f in concurrent.futures.as_completed(futures):
-            f.result()
-            done += 1
-            if progress and (done % 25 == 0 or done == total):
-                print(f"  checked {done}/{total}", file=sys.stderr)
+        try:
+            for f in concurrent.futures.as_completed(futures):
+                f.result()
+                done += 1
+                if progress and (done % 25 == 0 or done == total):
+                    print(f"  checked {done}/{total}", file=sys.stderr)
+        except CertError:
+            for f in futures:
+                f.cancel()
+            raise
 
 
 # --- filtering and display ---------------------------------------------------
@@ -629,41 +686,41 @@ def sort_key(e: dict, tlds: list[str]) -> tuple:
     )
 
 
-def cell(res: dict | None, priced: bool) -> str:
+def price_verified(res: dict) -> bool:
+    return bool((res.get("registrar") or {}).get("verified"))
+
+
+def cell(res: dict | None) -> str:
     if not res:
         return "-"
     s = res.get("status", UNKNOWN)
-    price = (res.get("registrar") or {}).get("price")
-    years = (res.get("registrar") or {}).get("years")
+    reg = res.get("registrar") or {}
+    price = reg.get("price")
+    years = reg.get("years")
     per = f"/{years}y" if isinstance(years, int) and years > 1 else ""
     if s == OPEN:
-        if price is not None:
+        if price_verified(res):
             return f"open ${price:,.0f}{per}"
-        return "open" if priced else "open*"
+        return f"open* ${price:,.0f}{per}" if isinstance(price, (int, float)) else "open*"
     if s == PREMIUM and price is not None:
         return f"premium ${price:,.0f}{per}"
-    if s == EXPIRING:
-        return "expiring"
     return s
 
 
 def render_text(doc: dict, shown: list[dict], filters_desc: str) -> str:
     tlds = doc["tlds"]
-    extras = doc.get("extras", [])
-    priced = bool(doc.get("registrar"))
-    headers = ["name", "len", "style"] + ["." + t for t in tlds] + extras
+    headers = ["name", "len", "style"] + ["." + t for t in tlds]
     rows = []
     for e in shown:
         row = [e["name"], str(e["length"]), e.get("style") or ""]
-        row += [cell(e["domains"].get(t), priced) for t in tlds]
-        row += [e["extras"].get(x, {}).get("status", "-") for x in extras]
+        row += [cell(e["domains"].get(t)) for t in tlds]
         rows.append(row)
     widths = [max(len(h), *(len(r[i]) for r in rows)) if rows else len(h) for i, h in enumerate(headers)]
     lines = []
     total = len(doc["names"])
     checked = doc.get("checked_at", "")
     try:
-        local = datetime.fromisoformat(checked).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        local = parse_time(checked).astimezone().strftime("%Y-%m-%d %H:%M %Z")
     except ValueError:
         local = checked
     head = f"{len(shown)} of {total} names, checked {local}"
@@ -679,12 +736,23 @@ def render_text(doc: dict, shown: list[dict], filters_desc: str) -> str:
         counts[status_of(e, tlds[0])] = counts.get(status_of(e, tlds[0]), 0) + 1
     lines.append("")
     lines.append(f".{tlds[0]} across all {total}: " + ", ".join(f"{v} {k}" for k, v in counts.items() if v))
-    if not priced and any(status_of(e, t) == OPEN for e in shown for t in tlds):
-        lines.append("open* = the registry has no record. Price not checked, so premium and reserved")
-        lines.append("        names are not ruled out. Set VERCEL_TOKEN to check them.")
-    if counts.get(UNKNOWN):
-        lines.append(f"unknown = no registry answer after {RETRIES} tries. Not counted as open.")
+    unverified = [e["domains"][t] for e in shown for t in tlds
+                  if t in e["domains"] and e["domains"][t].get("status") == OPEN
+                  and not price_verified(e["domains"][t])]
+    if unverified:
+        lines.append("open* = the registry has no record, but the price was not verified, so a premium")
+        if doc.get("registrar"):
+            lines.append("        or reserved name is not ruled out. See the row's note in results.json.")
+        else:
+            lines.append("        or reserved name is not ruled out. Set VERCEL_TOKEN to check prices.")
+    if any(e["domains"].get(t, {}).get("status") == UNKNOWN for e in doc["names"] for t in tlds):
+        lines.append("unknown = no usable registry answer. Not counted as open.")
     return "\n".join(lines)
+
+
+def parse_time(value: str) -> datetime:
+    t = datetime.fromisoformat(value)
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def describe_filters(args: argparse.Namespace, tlds: list[str]) -> str:
@@ -755,6 +823,7 @@ footer { padding: 0 32px 40px; font-size: 12px; color: #8a8a84; max-width: 860px
 <script>
 const doc = JSON.parse(document.getElementById('data').textContent);
 const tlds = doc.tlds, priced = !!doc.registrar;
+const verified = r => !!(r && r.registrar && r.registrar.verified);
 const $ = id => document.getElementById(id);
 $('title').textContent = doc.description || 'Name candidates';
 const when = new Date(doc.checked_at);
@@ -771,7 +840,7 @@ function chipText(t, r) {
   if (!r) return '.' + t + ' -';
   const p = r.registrar && r.registrar.price;
   const y = r.registrar && r.registrar.years > 1 ? '/' + r.registrar.years + 'y' : '';
-  if (r.status === 'open') return '.' + t + ' open' + (p != null ? ' $' + Math.round(p) + y : (priced ? '' : '*'));
+  if (r.status === 'open') return '.' + t + (verified(r) ? ' open $' + Math.round(p) + y : ' open*' + (p != null ? ' $' + Math.round(p) + y : ''));
   if (r.status === 'premium') return '.' + t + ' premium' + (p != null ? ' $' + Math.round(p).toLocaleString() + y : '');
   return '.' + t + ' ' + r.status;
 }
@@ -804,25 +873,24 @@ function render() {
       if (r && r.note) c.title = r.note;
       chips.appendChild(c);
     }
-    for (const [k, r] of Object.entries(n.extras || {})) {
-      const c = document.createElement('span'); c.className = 'chip ' + r.status; c.textContent = k + ' ' + r.status; chips.appendChild(c);
-    }
     card.append(nm, meta, chips); grid.appendChild(card);
   }
   if (!list.length) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'No names match these filters.'; grid.appendChild(e); }
   $('count').textContent = list.length + ' of ' + doc.names.length + ' shown';
 }
 document.querySelectorAll('.controls input, .controls select').forEach(el => el.addEventListener('input', render));
-$('foot').textContent = 'Open means the registry for that extension had no record when checked' +
-  (priced ? ', and the registrar would sell it at the price shown.' : '. Prices were not checked (*), so a premium or reserved name can still read open; add a Vercel token to rule those out.') +
-  ' Unknown means the registry did not answer, and it is never counted as open. Click a name to copy it.';
+const anyStar = doc.names.some(n => tlds.some(t => n.domains[t] && n.domains[t].status === 'open' && !verified(n.domains[t])));
+$('foot').textContent = 'Open means the registry for that extension had no record when checked. A price with no star means the registrar also confirmed it sells at the standard price.' +
+  (anyStar ? ' A star (*) means the price was not verified, so a premium or reserved name is not ruled out' + (priced ? '.' : '; add a Vercel token to check prices.') : '') +
+  ' Unknown means no usable registry answer, and it is never counted as open. Click a name to copy it.';
 render();
 </script></body></html>
 """
 
 
 def render_html(doc: dict) -> str:
-    data = json.dumps(doc, separators=(",", ":")).replace("</", "<\\/")
+    data = (json.dumps(doc, separators=(",", ":"))
+            .replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e"))
     title = html.escape(doc.get("description") or "name candidates")
     return HTML_TEMPLATE.replace("__TITLE__", title).replace("__DATA__", data)
 
@@ -851,49 +919,17 @@ def emit(doc: dict, args: argparse.Namespace) -> None:
         shown = shown[: args.limit]
     print(render_text(doc, shown, describe_filters(args, tlds)))
     if args.html:
+        Path(args.html).parent.mkdir(parents=True, exist_ok=True)
         Path(args.html).write_text(render_html(doc), encoding="utf-8")
         print(f"\nhtml view: {Path(args.html).resolve()}")
 
 
-REUSE_MAX_AGE = 3600
-
-
-def reuse_results(entries: list[dict], path: str, priced: bool) -> int:
-    """Copy answers under an hour old from an earlier results file, so a
-    second generation round only queries the new names. An open answer
-    without a registrar price is not reused when this run checks prices."""
-
-    try:
-        prior = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return 0
-    now = datetime.now(timezone.utc)
-    by_name = {e["name"]: e for e in prior.get("names", [])}
-    count = 0
-    for e in entries:
-        old = by_name.get(e["name"])
-        if not old:
-            continue
-        e.setdefault("domains", {})
-        e.setdefault("extras", {})
-        for kind in ("domains", "extras"):
-            for key, res in (old.get(kind) or {}).items():
-                try:
-                    at = datetime.fromisoformat(res["registry"]["at"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if (now - at).total_seconds() > REUSE_MAX_AGE or res.get("status") == UNKNOWN:
-                    continue
-                if priced and kind == "domains" and res.get("status") == OPEN and not res.get("registrar"):
-                    continue
-                e[kind][key] = res
-                count += 1
-        if not e.get("style") and old.get("style"):
-            e["style"] = old["style"]
-    return count
-
-
 def cmd_check(args: argparse.Namespace) -> int:
+    try:
+        tlds = parse_tlds(args.tlds)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     entries, bad = read_names(args.names)
     if bad:
         print(f"skipped {len(bad)} line(s) that are not valid domain labels: "
@@ -901,29 +937,27 @@ def cmd_check(args: argparse.Namespace) -> int:
     if not entries:
         print("no valid names to check", file=sys.stderr)
         return 2
-    tlds = parse_tlds(args.tlds)
-    extras = [x.strip() for x in (args.extras or "").split(",") if x.strip()]
-    for x in extras:
-        if x not in EXTRAS:
-            print(f"unknown extra '{x}'; choose from {', '.join(EXTRAS)}", file=sys.stderr)
-            return 2
-    vercel = None if args.no_price else vercel_from_env()
-    reused = reuse_results(entries, args.reuse, vercel is not None) if args.reuse else 0
-    if reused:
-        print(f"reusing {reused} answers from {args.reuse} (under {REUSE_MAX_AGE // 60} minutes old)",
-              file=sys.stderr)
-    print(f"checking {len(entries)} names on {', '.join('.' + t for t in tlds)}"
-          + (f" plus {', '.join(extras)}" if extras else "")
-          + (" with Vercel pricing" if vercel else ""), file=sys.stderr)
-    started = time.monotonic()
-    run_checks(entries, tlds, extras, args.workers, vercel)
+    description = args.description
+    if args.description_file:
+        description = Path(args.description_file).read_text(encoding="utf-8").strip()
+    for target in (args.out, args.html):
+        if target:
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        vercel = vercel_checked(tlds, args.no_price)
+        print(f"checking {len(entries)} names on {', '.join('.' + t for t in tlds)}"
+              + (" with Vercel pricing" if vercel else ""), file=sys.stderr)
+        started = time.monotonic()
+        run_checks(entries, tlds, args.workers, vercel)
+    except CertError as e:
+        print(CERT_HELP.format(e), file=sys.stderr)
+        return 3
     doc = {
         "tool": f"weavenames {VERSION}",
-        "description": args.description,
+        "description": description,
         "checked_at": now_iso(),
         "seconds": round(time.monotonic() - started, 1),
         "tlds": tlds,
-        "extras": extras,
         "registrar": "vercel" if vercel else None,
         "names": entries,
     }
@@ -934,39 +968,48 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+CERT_HELP = ("TLS certificate check failed ({}). Every lookup would fail the same way, so the run "
+             "stopped. On macOS with Python from python.org, run 'Install Certificates.command' in "
+             "the Python folder under Applications, then try again.")
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     doc = json.loads(Path(args.results).read_text(encoding="utf-8"))
     try:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(doc["checked_at"])).total_seconds()
-    except (KeyError, ValueError):
-        age = 0
+        age = (datetime.now(timezone.utc) - parse_time(doc["checked_at"])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        age = float("inf")
     if age > 24 * 3600:
-        print(f"warning: these results are {age / 3600:.0f} hours old. Re-run check before "
+        print("warning: these results are over a day old or undated. Re-run check before "
               "trusting an open domain.", file=sys.stderr)
     emit(doc, args)
     return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    vercel = None if args.no_price else vercel_from_env()
     rc = 0
+    vercel_cache: dict[str, Vercel | None] = {}
     for d in args.domains:
         d = d.strip().lower().rstrip(".")
         if "." not in d:
             d += ".com"
         name, tld = d.split(".", 1)
-        if not NAME_RE.match(name) or "." in tld:
+        if not valid_label(name) or "." in tld:
             print(f"{d}: not a second-level domain this tool checks")
             rc = 2
             continue
-        res = check_domain(name, tld)
-        if vercel and res["status"] == OPEN:
-            res = vercel.refine(res, tld)
+        try:
+            if tld not in vercel_cache:
+                vercel_cache[tld] = vercel_checked([tld], args.no_price)
+            vercel = vercel_cache[tld]
+            res = check_domain(name, tld)
+            if vercel and res["status"] == OPEN:
+                res = vercel.refine(res, tld)
+        except CertError as e:
+            print(CERT_HELP.format(e), file=sys.stderr)
+            return 3
         reg = res.get("registry", {})
-        line = f"{d}: {res['status']}"
-        price = (res.get("registrar") or {}).get("price")
-        if price is not None:
-            line += f" (${price:,.2f})"
+        line = f"{d}: {cell(res)}"
         if res.get("note"):
             line += f", {res['note']}"
         line += f"  [{reg.get('source', '?')} answered {reg.get('answer', '?')}]"
@@ -982,11 +1025,10 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check", help="check a file of names (one per line, optional style word)")
     c.add_argument("names", help="names file, or - for stdin")
     c.add_argument("-d", "--description", default="", help="what the names are for, shown in the views")
+    c.add_argument("--description-file", help="read the description from a file (no shell quoting)")
     c.add_argument("--tlds", help="comma list, default com")
-    c.add_argument("--extras", help="also check: github, npm (comma list)")
     c.add_argument("--out", help="write the full results JSON here")
     c.add_argument("--html", help="write a filterable HTML view here")
-    c.add_argument("--reuse", metavar="RESULTS", help="reuse answers under an hour old from an earlier results file")
     c.add_argument("--workers", type=int, default=16)
     c.add_argument("--no-price", action="store_true", help="skip the Vercel price check even if VERCEL_TOKEN is set")
     add_filter_args(c)
