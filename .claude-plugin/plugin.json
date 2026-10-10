@@ -1,0 +1,13 @@
+{
+  "name": "weavenames",
+  "version": "0.2.0",
+  "description": "Name your project and get plain-text names whose .com is actually unregistered, checked live against the registries, with filters and a clean view.",
+  "author": {
+    "name": "Kyle Northup",
+    "url": "https://weavenames.com"
+  },
+  "homepage": "https://weavenames.com",
+  "repository": "https://github.com/weavenames/weavenames",
+  "license": "MIT",
+  "keywords": ["naming", "domains", "namelix", "branding", "rdap"]
+}
