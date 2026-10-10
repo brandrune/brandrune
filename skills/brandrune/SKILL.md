@@ -1,17 +1,17 @@
 ---
-name: weavenames
-description: Name a product, app, or project and find names whose .com (or other domain) is actually unregistered, checked live against the registries. Plain-text names, real filters (length, extension, required word, style, available only), and a clean filterable page. Use when someone says "name this", "what should I call", "I need a name for", "brainstorm names", "find an available domain", "is X.com taken", "Namelix", or "weavenames".
+name: brandrune
+description: Name a product, app, or project and find names whose .com (or other domain) is actually unregistered, checked live against the registries. Plain-text names, real filters (length, extension, required word, style, available only), and a clean filterable page. Use when someone says "name this", "what should I call", "I need a name for", "brainstorm names", "find an available domain", "is X.com taken", "Namelix", "brandrune", or "weavenames" (its old name).
 ---
 
-# weavenames
+# Brandrune
 
 You come up with the names. The bundled script checks them. The script is the
 only source allowed to say a domain is open, and it only says so when the
 registry for that extension answered "no such domain" in this session.
 
-Script: `scripts/weavenames.py` in this skill's directory (the base directory is
+Script: `scripts/brandrune.py` in this skill's directory (the base directory is
 shown when the skill loads). It needs Python 3.9 or newer and nothing else.
-Below, `WN` means `python3 <skill dir>/scripts/weavenames.py`.
+Below, `BR` means `python3 <skill dir>/scripts/brandrune.py`.
 
 ## The rules that make this reliable
 
@@ -21,14 +21,14 @@ Below, `WN` means `python3 <skill dir>/scripts/weavenames.py`.
 2. **`unknown` is not available.** It means the script got no usable registry
    answer: no reply after retries, a redirect, a reply it could not read, a
    registry that failed the sanity check or has a bad certificate, or an
-   extension it does not support. Say so, and re-check with `WN verify <domain>`
+   extension it does not support. Say so, and re-check with `BR verify <domain>`
    if the name matters.
 3. **`open*` means unregistered, price not verified.** The script cannot rule
    out premium or registry-reserved names, which also look unregistered, unless
    a Vercel token confirmed the standard price for that row. Say "unregistered
    (price not verified)", never "free" and never the price as if it were
    confirmed. A plain `open $11` with no star is the only verified price.
-4. **Re-verify your final picks** with `WN verify` right before you recommend
+4. **Re-verify your final picks** with `BR verify` right before you recommend
    them. It takes a second and the answer is fresh.
 5. **Report what the script reported.** If a filter leaves 6 names, show 6. Do not
    pad the list with names you did not check.
@@ -83,18 +83,18 @@ What makes a good batch:
 - **Match their constraints exactly.** If they said 8 letters or fewer, every
   line is 8 or fewer.
 
-Save it in a scratch folder, for example `/tmp/weavenames-<slug>/names.txt`, and
-write their description, as they gave it, to `/tmp/weavenames-<slug>/about.txt`.
+Save it in a scratch folder, for example `/tmp/brandrune-<slug>/names.txt`, and
+write their description, as they gave it, to `/tmp/brandrune-<slug>/about.txt`.
 Pass the description by file, never inside quotes on the command line, so
 nothing in it gets run by the shell.
 
 ### 3. Check them
 
 ```bash
-WN check /tmp/weavenames-<slug>/names.txt \
-  --description-file /tmp/weavenames-<slug>/about.txt \
-  --out /tmp/weavenames-<slug>/results.json \
-  --html /tmp/weavenames-<slug>/names.html
+BR check /tmp/brandrune-<slug>/names.txt \
+  --description-file /tmp/brandrune-<slug>/about.txt \
+  --out /tmp/brandrune-<slug>/results.json \
+  --html /tmp/brandrune-<slug>/names.html
 ```
 
 Add `--tlds com,ai` (and so on) for more extensions; the first one listed is the
@@ -139,23 +139,23 @@ one command is gone by the next.
 
 | They say | Run |
 |---|---|
-| "only ones with the .com" | `WN show /tmp/weavenames-<slug>/results.json --available-only` |
-| "8 letters or fewer" | `WN show /tmp/weavenames-<slug>/results.json --max-len 8` |
-| "has to have 'strum' in it" | `WN show /tmp/weavenames-<slug>/results.json --include strum` |
-| "no 'ly' endings" | `WN show /tmp/weavenames-<slug>/results.json --exclude ly` |
-| "just compounds and blends" | `WN show /tmp/weavenames-<slug>/results.json --style compound,blend` |
-| ".com and .ai both open" | `WN show /tmp/weavenames-<slug>/results.json --open com,ai` |
-| "anything with an open domain" | `WN show /tmp/weavenames-<slug>/results.json --any-open` |
+| "only ones with the .com" | `BR show /tmp/brandrune-<slug>/results.json --available-only` |
+| "8 letters or fewer" | `BR show /tmp/brandrune-<slug>/results.json --max-len 8` |
+| "has to have 'strum' in it" | `BR show /tmp/brandrune-<slug>/results.json --include strum` |
+| "no 'ly' endings" | `BR show /tmp/brandrune-<slug>/results.json --exclude ly` |
+| "just compounds and blends" | `BR show /tmp/brandrune-<slug>/results.json --style compound,blend` |
+| ".com and .ai both open" | `BR show /tmp/brandrune-<slug>/results.json --open com,ai` |
+| "anything with an open domain" | `BR show /tmp/brandrune-<slug>/results.json --any-open` |
 
 Filters combine. Add `--limit 20` to cap the rows, and `--html` to
-redraw the page (`--html /tmp/weavenames-<slug>/names.html`). Results older than a day come with a warning; re-run `check`
+redraw the page (`--html /tmp/brandrune-<slug>/names.html`). Results older than a day come with a warning; re-run `check`
 before you trust an open answer that old.
 
 ### 7. Before they commit to a name
 
 For the one or two names they lean toward:
 
-- `WN verify <name>.com` (plus any other extension they want) for a fresh answer.
+- `BR verify <name>.com` (plus any other extension they want) for a fresh answer.
 - One web search for `"<name>" <their industry>`. A live business in the same
   field using the name is a problem even if the .com is open. Report what you
   found; this is a judgment, not a registry answer, so label it as one.
@@ -170,7 +170,7 @@ They register the domain themselves. This skill never buys anything.
 "Is fretwise.com taken?" needs no generation:
 
 ```bash
-WN verify fretwise.com fretwise.ai
+BR verify fretwise.com fretwise.ai
 ```
 
 ## What each status means
@@ -196,7 +196,7 @@ confirms that registry reports nic.<extension> or google.<extension> as
 registered. Extensions with no RDAP server and no WHOIS entry in the script
 (for example .us, .de, .eu, .ch, .es, .it, .nz), two-part ones like .co.uk,
 and .fi (its "not found" is an HTML page) always come back `unknown`. Run
-`WN verify <name>.<ext>` first if you are unsure an extension works.
+`BR verify <name>.<ext>` first if you are unsure an extension works.
 Every answer is stored in `results.json` with the URL or server that gave it and
 the time.
 

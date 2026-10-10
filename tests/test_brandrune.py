@@ -14,8 +14,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "weavenames" / "scripts"))
-import weavenames as wn  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "brandrune" / "scripts"))
+import brandrune as wn  # noqa: E402
 
 COM = "https://rdap.verisign.com/com/v1/"
 RDAP_CT = "application/rdap+json"
@@ -324,7 +324,7 @@ class RedirectAndContentTypeTests(unittest.TestCase):
     def test_http_only_bootstrap_servers_are_dropped(self):
         boot = {"services": [[["kg"], ["http://rdap.example.kg/"]], [["zz"], ["https://rdap.example.zz/"]]]}
         with mock.patch.object(wn, "http_get", lambda url, headers=None: (200, json.dumps(boot).encode(), "", "application/json")), \
-             mock.patch.object(wn, "cache_dir", lambda: Path("/nonexistent/weavenames-test")):
+             mock.patch.object(wn, "cache_dir", lambda: Path("/nonexistent/brandrune-test")):
             table = wn.load_bootstrap()
         self.assertNotIn("kg", table)
         self.assertEqual(table["zz"], "https://rdap.example.zz/")

@@ -1,13 +1,13 @@
 {
-  "name": "weavenames",
-  "description": "Naming for people who build with AI: registry-checked names, plain text, real filters.",
+  "name": "brandrune",
+  "description": "Brandrune: plain-text names, registry-checked domains, real filters.",
   "owner": {
     "name": "Kyle Northup",
-    "url": "https://github.com/weavenames"
+    "url": "https://brandrune.com"
   },
   "plugins": [
     {
-      "name": "weavenames",
+      "name": "brandrune",
       "description": "Name your project and get plain-text names whose .com is actually unregistered, checked live against the registries.",
       "source": "./"
     }

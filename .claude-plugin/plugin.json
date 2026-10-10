@@ -1,13 +1,13 @@
 {
-  "name": "weavenames",
-  "version": "0.2.2",
+  "name": "brandrune",
+  "version": "0.3.0",
   "description": "Name your project and get plain-text names whose .com is actually unregistered, checked live against the registries, with filters and a clean view.",
   "author": {
     "name": "Kyle Northup",
-    "url": "https://github.com/weavenames"
+    "url": "https://brandrune.com"
   },
-  "homepage": "https://github.com/weavenames/weavenames",
-  "repository": "https://github.com/weavenames/weavenames",
+  "homepage": "https://brandrune.com",
+  "repository": "https://github.com/brandrune/brandrune",
   "license": "MIT",
-  "keywords": ["naming", "domains", "namelix", "branding", "rdap"]
+  "keywords": ["naming", "domains", "namelix", "branding", "rdap", "brandrune", "weavenames"]
 }
