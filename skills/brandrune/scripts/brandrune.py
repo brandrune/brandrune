@@ -876,14 +876,14 @@ h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
 main { padding: 16px 32px 48px; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .card { background: #fff; border: 1px solid #e6e5e0; border-radius: 10px; padding: 14px 16px; }
 .name { font-size: 22px; font-weight: 600; letter-spacing: 0.01em; word-break: break-all; cursor: copy; }
-.meta { font-size: 12px; color: #8a8a84; margin: 2px 0 10px; }
+.meta { font-size: 12px; color: #5f5f5a; margin: 2px 0 10px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid #e0dfd9; color: #6b6b66; background: #f4f4f1; }
 .chip.open { background: #e8f5ec; border-color: #b9dfc5; color: #1f6b3a; font-weight: 600; }
 .chip.premium, .chip.expiring { background: #fdf3e1; border-color: #f0d49c; color: #8a5a00; }
-.chip.taken, .chip.parked, .chip.reserved { text-decoration: line-through; color: #9a9a94; }
-.chip.unknown { background: #fff; border-style: dashed; color: #8a8a84; }
-footer { padding: 0 32px 40px; font-size: 12px; color: #8a8a84; max-width: 860px; }
+.chip.taken, .chip.parked, .chip.reserved { text-decoration: line-through; color: #6b6b66; }
+.chip.unknown { background: #fff; border-style: dashed; color: #5f5f5a; }
+footer { padding: 0 32px 40px; font-size: 12px; color: #5f5f5a; max-width: 860px; }
 .empty { grid-column: 1 / -1; color: #6b6b66; padding: 40px 0; text-align: center; }
 </style></head>
 <body>
