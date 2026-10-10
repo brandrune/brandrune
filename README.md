@@ -1,92 +1,114 @@
-# Weavenames
+# weavenames
 
-**Naming for builders.**
+**Naming for people who build with AI.**
 
-Weavenames generates project name candidates and verifies their availability across PyPI, npm, GitHub, and domain registries — in parallel — so you stop hand-checking 20 things per name.
+A free Claude Code skill. Describe what you are building in a sentence. You get
+back names as plain text, each one checked live against the domain registries,
+with filters you actually control and a clean page to browse them.
 
-```bash
-uv tool install weavenames
-export ANTHROPIC_API_KEY=sk-ant-...
-weavenames "open-source memory layer for AI agents, Postgres-native"
+It exists because the usual name generators have three problems: the names come
+back styled as logos, so they are hard to read; you cannot filter them; and the
+page is noisy. There is a fourth problem in most of them: "available" is a
+guess. Here it is not. A domain is only called open when the registry for that
+extension says it has no record of it, in the same run.
+
+## Install
+
+In Claude Code:
+
+```
+/plugin marketplace add weavenames/weavenames
+/plugin install weavenames@weavenames
 ```
 
-## Why this exists
-
-Existing naming tools (Namelix, Namesnack, Naming.fyi) generate names but don't check developer registries. You can spend an afternoon hand-verifying PyPI, npm, GitHub, and domains for a single shortlist.
-
-Weavenames does the whole pipeline:
-
-1. **Generates** ~200 candidates via Claude Haiku 4.5 with taste guardrails.
-2. **Filters** for length, pronounceability, profanity, and similarity to existing infra packages.
-3. **Checks** PyPI, npm, GitHub user/repo, RDAP domains (`.com .dev .io .ai`), and USPTO trademarks in parallel.
-4. **Interprets** raw availability — flags squatters, premium-priced domains, GitHub-reserved names, pending-delete states (RFC 8056).
-5. **Ranks** with pairwise LLM comparison (ELO over rounds — more stable than 0–10 scoring).
-6. **Reports** a markdown matrix with per-registry status glyphs and rationale.
-
-## Phase 1 capabilities
-
-| Stage | Status | Notes |
-|---|---|---|
-| LLM generation | done | Claude Haiku 4.5, batches of 50, parallelized |
-| Heuristic filters | done | length / profanity / pronounceability / collisions / Levenshtein + n-gram similarity |
-| PyPI / npm | done | Direct registry GET |
-| GitHub user + repo | done | `GITHUB_TOKEN` lifts limits to 5K/hr |
-| RDAP domains | done | `whodap` via IANA bootstrap, per-TLD asyncio semaphore |
-| Squatter detection | done | Zero downloads + no GitHub link + 2yr inactive → `soft_claimed` |
-| GitHub reserved-name filter | done | Static list of platform-reserved usernames |
-| RDAP `pending delete` mapping | done | RFC 8056 statuses → `available_soon` |
-| Fastly premium-domain check | done | Skips silently if `FASTLY_API_TOKEN` not set |
-| USPTO TESS / TMSearch | done | Top 30, classes 9 (software) and 42 (SaaS) |
-| Pairwise LLM ranking | done | ELO with stability-based early exit |
-| Markdown + CSV report | done | Glyph matrix + auto-rationale |
-| Interactive taste profile | done | `~/.weavenames/profile.json`, accept/reject prompt after each run |
-
-## Usage
+Or copy the skill folder by hand:
 
 ```bash
-weavenames "your project description here"
-
-# Common flags
-weavenames "..." --keywords memory,agent,postgres
-weavenames "..." --tlds .com,.dev,.io --top 30
-weavenames "..." --target 300 --rank-rounds 6
-weavenames "..." --output report.md --csv shortlist.csv
-weavenames "..." --no-trademark --no-fastly --no-prompt
+git clone https://github.com/weavenames/weavenames
+cp -r weavenames/skills/weavenames ~/.claude/skills/
 ```
 
-## Environment
+It needs Python 3.9 or newer, which macOS and most Linux systems already have.
+There is nothing to pip install and no API key to set.
 
-| Variable | Required? | Notes |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Required | Generation + ranking |
-| `GITHUB_TOKEN` | Recommended | Without it, GitHub repo search is skipped and user check is rate-limited at 60/hr |
-| `FASTLY_API_TOKEN` | Optional | Enables premium / aftermarket domain detection (10K free / month) |
-| `WEAVENAMES_PROFILE` | Optional | Override default profile path (`~/.weavenames/profile.json`) |
+## Use
 
-## Output legend
+Ask in plain words:
 
-| Glyph | Meaning |
+> Name my app. It's a practice tracker for adults learning guitar, with a
+> streak and a metronome built in.
+
+> I need a name for a CLI that cleans up dotfiles. Short, and the .com has to be
+> open.
+
+> Is lumenfret.com taken?
+
+Claude writes about 150 candidates in a mix of styles, the bundled script checks
+every one, and you get a short recommendation plus a filterable page with the
+full list. Then filter by talking:
+
+> Only 8 letters or less. Has to have "strum" in it. Just compounds.
+
+## What "open" means
+
+| Status | Meaning |
 |---|---|
-| ✅ | Free |
-| ❌ | Taken |
-| ⚠️ | Soft-claimed (squatter / abandoned) |
-| 🚫 | Reserved (e.g. GitHub platform name) |
-| 🕒 | Available soon (RDAP pending-delete / redemption) |
-| 💰 | Premium / aftermarket pricing |
-| ❓ | Probe error (transient) |
-| ➖ | Skipped (e.g. `.io` has no public RDAP server) |
+| open $11 | The registry has no record, and the registrar confirmed it sells at the standard price shown. Needs a Vercel token. |
+| open* | The registry has no record. Price not verified, so a premium or reserved name is still possible. |
+| premium | No registry record, but it is priced well above standard. |
+| reserved | No registry record, but no registrar will sell it. |
+| taken | Registered. |
+| parked | Registered, and parked at a domain-sale service. Often buyable from a reseller, at a markup. |
+| expiring | Registered, but in redemption or pending delete. |
+| unknown | No usable registry answer: no reply after retries, a redirect, an unreadable reply, or an unsupported extension. Never counted as open. |
 
-## Status
+Answers come straight from the registries: .com and .net from Verisign, most
+other extensions from their registry's RDAP server (found through IANA's
+bootstrap list), and .io, .co, .sh, .me, .so and .gg from their registry's
+WHOIS, since those have no RDAP server. Redirects are never followed, a "not
+found" only counts when it is a real RDAP reply, and each registry must first
+report nic.<extension> or google.<extension> as registered before any name on
+it is called open. Extensions with neither an RDAP server nor a WHOIS entry in
+the script (for example .us, .de, .eu, .ch, .es, .it, .nz), two-part ones such
+as .co.uk, and .fi always come back unknown.
+Every answer is saved with the server that gave it and the time.
 
-**Pre-alpha — Phase 1.** Phases 2 (Claude skill wrapper) and 3 (social handles, multi-language profanity, Cloudflare Registrar) are on the roadmap.
+## Optional setup
+
+- **`VERCEL_TOKEN`** turns `open*` into a priced `open` and catches premium and
+  reserved names, which a registry lookup alone cannot see. Any free Vercel
+  account works: create a token at https://vercel.com/account/tokens. Add
+  `VERCEL_TEAM_ID` if it is a team token.
+
+## The script on its own
+
+The checker works without Claude too:
+
+```bash
+S=skills/weavenames/scripts/weavenames.py
+python3 $S verify lumenfret.com lumenfret.ai
+python3 $S check names.txt --tlds com,ai --out results.json --html names.html
+python3 $S show results.json --available-only --max-len 9 --include strum
+```
+
+`names.txt` is one name per line, optionally followed by a style word.
+`python3 $S check --help` lists every filter.
+
+## What it does not do
+
+- Buy domains. You register the one you pick, wherever you like.
+- Clear trademarks. It points you to the USPTO search; that check is yours.
+- Make logos.
 
 ## Development
 
 ```bash
-uv sync --extra dev
-uv run pytest
-uvx ruff check .
+python3 -m unittest discover -s tests
 ```
+
+The tests are offline and fake every registry answer. Earlier versions (a
+Python package with its own model calls and ranking) live in the git history,
+up to commit `cffa5dd`.
 
 ## License
 

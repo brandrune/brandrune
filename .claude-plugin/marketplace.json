@@ -1,0 +1,15 @@
+{
+  "name": "weavenames",
+  "description": "Naming for people who build with AI: registry-checked names, plain text, real filters.",
+  "owner": {
+    "name": "Kyle Northup",
+    "url": "https://github.com/weavenames"
+  },
+  "plugins": [
+    {
+      "name": "weavenames",
+      "description": "Name your project and get plain-text names whose .com is actually unregistered, checked live against the registries.",
+      "source": "./"
+    }
+  ]
+}
