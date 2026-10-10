@@ -7,10 +7,9 @@ Claude writes about 150 names, and a small script asks the domain registries
 about every one. You get plain-text names, filters you actually control, and a
 clean page to browse them. Site: https://brandrune.com
 
-It exists because the usual name generators have three problems: the names come
-back styled as logos, so they are hard to read; you cannot filter them; and the
-page is noisy. There is a fourth problem in most of them: "available" is a
-guess. Here it is not. A domain is only called open when the registry for that
+It exists because the usual name generators have two problems: the names come
+back styled as logos, so they are hard to read, and the page is noisy. There is
+a third problem in most of them: "available" is a guess. Here it is not. A domain is only called open when the registry for that
 extension says it has no record of it, in the same run.
 
 Free, forever. No account, no API key, no paid tier.
