@@ -42,8 +42,12 @@ There is nothing to pip install and no API key to set.
 
 ### Coming from weavenames
 
-Brandrune was called weavenames until version 0.3.0. If you installed it under
-the old name, switch over once:
+Brandrune was called weavenames until version 0.3.0. An existing
+`weavenames@weavenames` install keeps working: the marketplace still lists
+`weavenames` as an alias, so the next marketplace update brings you Brandrune
+under the old name. The skill also still answers when you ask for "weavenames".
+
+To move to the new name for good, once:
 
 ```
 /plugin uninstall weavenames@weavenames
@@ -52,8 +56,7 @@ the old name, switch over once:
 /plugin install brandrune@brandrune
 ```
 
-The old `weavenames/weavenames` GitHub address redirects here, and the skill
-still answers when you ask for "weavenames".
+Keep only one of the two installed, or the skill loads twice.
 
 ## Use
 

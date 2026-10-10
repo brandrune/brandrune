@@ -10,6 +10,11 @@
       "name": "brandrune",
       "description": "Name your project and get plain-text names whose .com is actually unregistered, checked live against the registries.",
       "source": "./"
+    },
+    {
+      "name": "weavenames",
+      "description": "The old name for brandrune, kept so existing installs keep working. New installs: brandrune@brandrune.",
+      "source": "./"
     }
   ]
 }
